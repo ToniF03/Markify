@@ -1,39 +1,25 @@
-# Visual Studio workspace and user-specific settings
+# Visual Studio user and workspace files
 .vs/
 *.suo
 *.user
 *.userosscache
 *.sln.docstates
-*.csproj.user
 
-# Build output
-**/[Bb]in/
-**/[Oo]bj/
-**/[Dd]ebug/
-**/[Rr]elease/
-**/x64/
-**/x86/
-**/[Aa]rm/
-**/[Aa]rm64/
-**/[Bb]uild[Ll]og.*
-**/[Tt]est[Rr]esult*/
-**/artifacts/
-**/publish/
+# Build output for the Markify and MarkifyTextBox projects
+**/bin/
+**/obj/
 
-# NuGet packages
+# NuGet packages and generated archives
+packages/
 *.nupkg
 *.snupkg
-**/[Pp]ackages/*
-!**/[Pp]ackages/build/
 
-# IDE and tool caches
+# Test and publish output
+TestResults/
+artifacts/
+publish/
+
+# Optional IDE extensions
 .idea/
 _ReSharper*/
 *.DotSettings.user
-*.cache
-
-# Debug symbols and temporary files
-*.pdb
-*.mdb
-*.tmp
-*.log
