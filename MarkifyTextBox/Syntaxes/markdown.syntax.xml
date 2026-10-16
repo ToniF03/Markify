@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<SyntaxDefinition name="Markdown">
+  <Aliases>
+    <Alias>markdown</Alias>
+    <Alias>md</Alias>
+  </Aliases>
+  <Rules>
+    <!-- Block structure -->
+    <Rule foreground="#4FC1FF" pattern="^ {0,3}#{1,6}(?=[ \t]|$)" />
+    <Rule foreground="#4FC1FF" pattern="^ {0,3}#{1,6}[ \t]+.*$" />
+    <Rule foreground="#6A9955" pattern="^ {0,3}&gt;+" />
+    <Rule foreground="#B5CEA8" pattern="^ {0,3}(?:[-+*]|[0-9]{1,9}[.)])(?=[ \t])" />
+    <Rule foreground="#6A9955" pattern="^(?: {4}|\t).+$" />
+    <Rule foreground="#D7BA7D" pattern="\[[ xX]\]" />
+    <Rule foreground="#6A9955" pattern="^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$" />
+    <Rule foreground="#6A9955" pattern="^[ \t]*(?:=+|-+)[ \t]*$" />
+    <Rule foreground="#D7BA7D" pattern="^ {0,3}(`{3,}|~{3,}).*$" />
+    <Rule foreground="#6A9955" pattern="^ {0,3}\[[^\]\r\n]+\]:[ \t]*\S+.*$" />
+    <Rule foreground="#6A9955" pattern="\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)+\|?" />
+    <Rule foreground="#808080" pattern="\|" />
+
+    <!-- Inline emphasis -->
+    <Rule foreground="#DCDCAA" pattern="(\*\*|__)(?=\S).+?(?&lt;=\S)\1" />
+    <Rule foreground="#DCDCAA" pattern="(?&lt;!\*)\*(?!\*)\S(?:[^*\r\n]*\S)?\*(?!\*)" />
+    <Rule foreground="#DCDCAA" pattern="(?&lt;!_)_(?!_)\S(?:[^_\r\n]*\S)?_(?!_)" />
+    <Rule foreground="#D16969" pattern="~~(?=\S)[^~\r\n]*\S~~" />
+    <Rule foreground="#C586C0" pattern="(?&lt;!\^)\^(?!\^)\S(?:[^^\r\n]*\S)?\^(?!\^)" />
+    <Rule foreground="#C586C0" pattern="(?&lt;!~)~(?!~)\S(?:[^~\r\n]*\S)?~(?!~)" />
+
+    <!-- Links, references, and media -->
+    <Rule foreground="#4EC9B0" pattern="!?(?&lt;!\])\[[^\]\r\n]*\]\([^)\r\n]*\)" />
+    <Rule foreground="#4EC9B0" pattern="!?\[[^\]\r\n]+\](?:\[[^\]\r\n]*\])" />
+    <Rule foreground="#4EC9B0" pattern="\[\^[^\]\r\n]+\]" />
+    <Rule foreground="#9CDCFE" pattern="&lt;(?:https?|mailto):[^ &gt;]+&gt;|&lt;[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}&gt;" />
+    <Rule foreground="#9CDCFE" pattern="\bhttps?://[^\s&lt;&gt;()]+" />
+    <Rule foreground="#9CDCFE" pattern="^ {0,3}\[[^\]\r\n]+\]:[ \t]*\S+" />
+
+    <!-- Inline code, HTML, escapes, and entities -->
+    <Rule foreground="#6A9955" pattern="&lt;!--.*?--&gt;" />
+    <Rule foreground="#569CD6" pattern="&lt;/?[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[^&gt;]*)?[ \t]*/?&gt;" />
+    <Rule foreground="#D7BA7D" pattern="\\[\\`*_{}\[\]()#+.!~^&gt;-]" />
+    <Rule foreground="#D7BA7D" pattern="&amp;(?:#\d+|#x[\da-fA-F]+|[A-Za-z][A-Za-z0-9]+);" />
+    <Rule foreground="#CE9178" pattern="(`+)(?!`)[^`\r\n]+(?&lt;!`)\1" />
+  </Rules>
+</SyntaxDefinition>

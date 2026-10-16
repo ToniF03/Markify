@@ -33,6 +33,8 @@
   <ItemGroup>
     <Reference Include="System" />
     <Reference Include="System.Core" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.Xml.Linq" />
     <Reference Include="System.Xaml" />
     <Reference Include="WindowsBase" />
     <Reference Include="PresentationCore" />
@@ -43,7 +45,13 @@
     <Compile Include="MarkifyTextBox.Behavior.cs" />
     <Compile Include="MarkifyTextBox.cs" />
     <Compile Include="MarkifyTextBox.Rendering.cs" />
+    <Compile Include="SyntaxDefinition.cs" />
     <Compile Include="SyntaxHighlightRule.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Syntaxes\markdown.syntax.xml">
+      <LogicalName>Markify.Textify.Syntaxes.markdown.syntax.xml</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

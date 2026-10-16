@@ -41,12 +41,14 @@ namespace Markify.Textify
             public int OpeningLine;
             public int ClosingLine;
             public int DelimiterLength;
+            public string Language;
 
-            public MarkdownCodeFenceBlock(int openingLine, int closingLine, int delimiterLength)
+            public MarkdownCodeFenceBlock(int openingLine, int closingLine, int delimiterLength, string language)
             {
                 OpeningLine = openingLine;
                 ClosingLine = closingLine;
                 DelimiterLength = delimiterLength;
+                Language = language;
             }
         }
 
@@ -182,6 +184,8 @@ namespace Markify.Textify
         private static readonly Brush MarkdownInlineCodeBackground = CreateFrozenBrush(Color.FromRgb(238, 240, 243));
         private static readonly Brush MarkdownInlineCodeForeground = CreateFrozenBrush(Color.FromRgb(91, 49, 47));
         private static readonly Brush MarkdownListMarkerForeground = CreateFrozenBrush(Color.FromRgb(76, 98, 122));
+        private static readonly SyntaxDefinition MarkdownSyntaxDefinition =
+            SyntaxDefinition.LoadFromResource("Markify.Textify.Syntaxes.markdown.syntax.xml");
 
         private static Brush CreateFrozenBrush(Color color)
         {
@@ -435,7 +439,8 @@ namespace Markify.Textify
             while (line < _lineCache.Length)
             {
                 int delimiterLength;
-                if (!TryParseMarkdownCodeFenceOpening(_lineCache[line].TrimEnd('\r'), out delimiterLength))
+                string language;
+                if (!TryParseMarkdownCodeFenceOpening(_lineCache[line].TrimEnd('\r'), out delimiterLength, out language))
                 {
                     line++;
                     continue;
@@ -452,7 +457,7 @@ namespace Markify.Textify
                 }
 
                 int blockIndex = _markdownCodeFenceBlocks.Count;
-                _markdownCodeFenceBlocks.Add(new MarkdownCodeFenceBlock(line, closingLine, delimiterLength));
+                _markdownCodeFenceBlocks.Add(new MarkdownCodeFenceBlock(line, closingLine, delimiterLength, language));
                 int lastLine = closingLine >= 0 ? closingLine : _lineCache.Length - 1;
                 for (int blockLine = line; blockLine <= lastLine; blockLine++)
                     _markdownCodeFenceByLine[blockLine] = blockIndex;
@@ -460,9 +465,10 @@ namespace Markify.Textify
             }
         }
 
-        private static bool TryParseMarkdownCodeFenceOpening(string value, out int delimiterLength)
+        private static bool TryParseMarkdownCodeFenceOpening(string value, out int delimiterLength, out string language)
         {
             delimiterLength = 0;
+            language = string.Empty;
             int indent = 0;
             while (indent < value.Length && indent <= 3 && value[indent] == ' ') indent++;
             if (indent > 3 || indent >= value.Length || value[indent] != '`') return false;
@@ -470,6 +476,14 @@ namespace Markify.Textify
             if (delimiterLength < 3) return false;
             for (int i = indent + delimiterLength; i < value.Length; i++)
                 if (value[i] == '`') return false;
+            int infoStart = indent + delimiterLength;
+            while (infoStart < value.Length && char.IsWhiteSpace(value[infoStart])) infoStart++;
+            if (infoStart < value.Length)
+            {
+                int infoEnd = infoStart;
+                while (infoEnd < value.Length && !char.IsWhiteSpace(value[infoEnd])) infoEnd++;
+                language = value.Substring(infoStart, infoEnd - infoStart).ToLowerInvariant();
+            }
             return true;
         }
 
@@ -942,6 +956,33 @@ namespace Markify.Textify
             if (!IsMarkdownCodeFenceLine(line) || textLength <= 0) return;
             formatted.SetFontFamily(MarkdownInlineCodeFontFamily, 0, textLength);
             formatted.SetForegroundBrush(MarkdownInlineCodeForeground, 0, textLength);
+        }
+
+        internal void ApplyMarkdownFenceSyntaxHighlighting(FormattedText formatted, int line, int[] sourceColumns)
+        {
+            MarkdownCodeFenceBlock block;
+            if (sourceColumns == null || sourceColumns.Length == 0 || !IsMarkdownCodeFenceBodyLine(line) ||
+                !TryGetMarkdownCodeFenceBlock(line, out block) ||
+                !MarkdownSyntaxDefinition.MatchesLanguage(block.Language)) return;
+
+            string value = _lineCache[line].TrimEnd('\r');
+            foreach (SyntaxHighlightRule rule in MarkdownSyntaxDefinition.Rules)
+            {
+                foreach (System.Text.RegularExpressions.Match match in rule.Matcher.Matches(value))
+                {
+                    if (match.Length == 0) continue;
+                    int index = 0;
+                    while (index < sourceColumns.Length)
+                    {
+                        while (index < sourceColumns.Length &&
+                            (sourceColumns[index] < match.Index || sourceColumns[index] >= match.Index + match.Length)) index++;
+                        int start = index;
+                        while (index < sourceColumns.Length &&
+                            sourceColumns[index] >= match.Index && sourceColumns[index] < match.Index + match.Length) index++;
+                        if (index > start) formatted.SetForegroundBrush(rule.Foreground, start, index - start);
+                    }
+                }
+            }
         }
 
         internal void ApplyMarkdownListMarkerStyle(FormattedText formatted, int line, int[] sourceColumns)

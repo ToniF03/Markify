@@ -166,6 +166,7 @@ namespace Markify.Textify
                             _editor.ApplyMarkdownScriptStyle(formatted, documentLine, renderedSegment.SourceColumns);
                             _editor.ApplyMarkdownInlineCode(formatted, documentLine, renderedSegment.SourceColumns);
                             _editor.ApplyMarkdownCodeFenceStyle(formatted, documentLine, line.Length);
+                            _editor.ApplyMarkdownFenceSyntaxHighlighting(formatted, documentLine, renderedSegment.SourceColumns);
                             _editor.ApplyMarkdownListMarkerStyle(formatted, documentLine, renderedSegment.SourceColumns);
                             dc.DrawText(formatted, new Point(textOrigin, y + Math.Max(0, (rowHeight - formatted.Height) / 2)));
                         }
@@ -196,6 +197,7 @@ namespace Markify.Textify
                                 _editor.ApplyMarkdownScriptStyle(formatted, documentLine, runSourceColumns);
                                 _editor.ApplyMarkdownInlineCode(formatted, documentLine, runSourceColumns);
                                 _editor.ApplyMarkdownCodeFenceStyle(formatted, documentLine, runLength);
+                                _editor.ApplyMarkdownFenceSyntaxHighlighting(formatted, documentLine, runSourceColumns);
                                 _editor.ApplyMarkdownListMarkerStyle(formatted, documentLine, runSourceColumns);
 
                                 double x = textOrigin +
