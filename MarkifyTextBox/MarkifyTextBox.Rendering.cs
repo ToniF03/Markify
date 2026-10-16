@@ -157,6 +157,7 @@ namespace Markify.Textify
                         if (_editor.EnableSyntaxHighlighting)
                             _editor.ApplySyntaxHighlighting(formatted, line, documentLine);
                         _editor.ApplyMarkdownBold(formatted, documentLine, renderedSegment.SourceColumns);
+                        _editor.ApplyMarkdownItalic(formatted, documentLine, renderedSegment.SourceColumns);
                         _editor.ApplyMarkdownInlineCode(formatted, documentLine, renderedSegment.SourceColumns);
                         _editor.ApplyMarkdownCodeFenceStyle(formatted, documentLine, line.Length);
                         _editor.ApplyMarkdownListMarkerStyle(formatted, documentLine, renderedSegment.SourceColumns);
