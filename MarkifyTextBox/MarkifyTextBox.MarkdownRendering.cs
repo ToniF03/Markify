@@ -53,6 +53,18 @@ namespace Markify.Textify
             }
         }
 
+        internal struct MarkdownHardBreakMarker
+        {
+            public int Start;
+            public int End;
+
+            public MarkdownHardBreakMarker(int start, int end)
+            {
+                Start = start;
+                End = end;
+            }
+        }
+
         internal struct MarkdownLinkSpan
         {
             public int Start;
@@ -61,8 +73,10 @@ namespace Markify.Textify
             public int TargetStart;
             public int TargetLength;
             public int End;
+            public string Destination;
 
-            public MarkdownLinkSpan(int start, int labelStart, int labelLength, int targetStart, int targetLength, int end)
+            public MarkdownLinkSpan(int start, int labelStart, int labelLength, int targetStart, int targetLength,
+                int end, string destination)
             {
                 Start = start;
                 LabelStart = labelStart;
@@ -70,6 +84,7 @@ namespace Markify.Textify
                 TargetStart = targetStart;
                 TargetLength = targetLength;
                 End = end;
+                Destination = destination;
             }
         }
 
@@ -554,6 +569,71 @@ namespace Markify.Textify
             int lineStart = GetLineStart(line);
             int start = lineStart + marker.Start;
             int end = lineStart + marker.End;
+            if (_taskCheckboxDisplaySuppressedAt == start && SelectionLength == 0 &&
+                _caret >= start && _caret <= end) return false;
+            if (_caret >= start && _caret <= end) return true;
+            foreach (int caret in AdditionalCaretPositions)
+                if (caret >= start && caret <= end) return true;
+            foreach (SelectionSpan selection in GetSelectionSpansForLine(line))
+                if (selection.Start < end && selection.Start + selection.Length > start) return true;
+            return false;
+        }
+
+        internal bool TryGetMarkdownTaskCheckboxBounds(int line, RenderedTextSegment segment,
+            double textOrigin, double y, double rowHeight, bool requireRenderedCheckbox,
+            out MarkdownTaskMarker marker, out Rect bounds)
+        {
+            marker = default(MarkdownTaskMarker);
+            bounds = Rect.Empty;
+            if (!TryGetMarkdownTaskMarkerForLine(line, out marker)) return false;
+            bool markerVisible = MarkdownTaskMarkerIsVisible(line, marker);
+            if (requireRenderedCheckbox && markerVisible) return false;
+            int displayColumn = RenderedCharacterForSourceColumn(segment, marker.Start);
+            if (displayColumn < 0) return false;
+            double glyphStart = textOrigin + MeasureRenderedTextWidthForLine(segment, line, displayColumn);
+            if (markerVisible)
+            {
+                int displayEnd = RenderedBoundaryForSourceColumn(segment, marker.End);
+                double glyphEnd = textOrigin + MeasureRenderedTextWidthForLine(segment, line, displayEnd);
+                bounds = new Rect(glyphStart, y, Math.Max(8, glyphEnd - glyphStart), rowHeight);
+                return true;
+            }
+            double glyphWidth = MeasureRenderedTextWidthForLine(segment, line, displayColumn + 1) -
+                MeasureRenderedTextWidthForLine(segment, line, displayColumn);
+            double size = Math.Min(14, Math.Max(10, rowHeight - 4));
+            bounds = new Rect(glyphStart + Math.Max(0, (glyphWidth - size) / 2),
+                y + Math.Max(0, (rowHeight - size) / 2), size, size);
+            return true;
+        }
+
+        internal bool TryGetMarkdownHardBreakMarkerForLine(int line, out MarkdownHardBreakMarker marker)
+        {
+            marker = default(MarkdownHardBreakMarker);
+            if (line < 0 || line >= _lineCache.Length || IsMarkdownCodeFenceLine(line)) return false;
+            MarkdownTableLayout tableLayout;
+            if (TryGetMarkdownTableLayout(line, out tableLayout)) return false;
+            string value = _lineCache[line].TrimEnd('\r');
+            int end = value.Length;
+            int trailingSpaces = 0;
+            while (end - trailingSpaces - 1 >= 0 && value[end - trailingSpaces - 1] == ' ') trailingSpaces++;
+            if (trailingSpaces >= 2 && trailingSpaces < value.Length)
+            {
+                marker = new MarkdownHardBreakMarker(value.Length - trailingSpaces, value.Length);
+                return true;
+            }
+            if (end == 0 || value[end - 1] != '\\') return false;
+            int backslashes = 0;
+            for (int previous = end - 1; previous >= 0 && value[previous] == '\\'; previous--) backslashes++;
+            if (backslashes % 2 == 0) return false;
+            marker = new MarkdownHardBreakMarker(end - 1, end);
+            return true;
+        }
+
+        internal bool MarkdownHardBreakMarkerIsVisible(int line, MarkdownHardBreakMarker marker)
+        {
+            int lineStart = GetLineStart(line);
+            int start = lineStart + marker.Start;
+            int end = lineStart + marker.End;
             if (_caret >= start && _caret <= end) return true;
             foreach (int caret in AdditionalCaretPositions)
                 if (caret >= start && caret <= end) return true;
@@ -569,11 +649,9 @@ namespace Markify.Textify
             string value = _lineCache[line].TrimEnd('\r');
             for (int start = 0; start < value.Length; start++)
             {
-                if (value[start] != '[' || (start > 0 && value[start - 1] == '!')) continue;
+                if (value[start] != '[' || (start > 0 && value[start - 1] == '!') || IsEscaped(value, start)) continue;
                 int labelEnd = FindUnescapedCharacter(value, ']', start + 1);
-                if (labelEnd < 0 || labelEnd + 1 >= value.Length || value[labelEnd + 1] != '(') continue;
-                int targetEnd = FindUnescapedCharacter(value, ')', labelEnd + 2);
-                if (targetEnd < 0) continue;
+                if (labelEnd < 0) continue;
                 bool insideCode = false;
                 foreach (MarkdownInlineCodeSpan code in GetMarkdownInlineCodeSpansForLine(line))
                     if (start >= code.ContentStart - code.DelimiterLength &&
@@ -583,11 +661,154 @@ namespace Markify.Textify
                         break;
                     }
                 if (insideCode) continue;
-                links.Add(new MarkdownLinkSpan(start, start + 1, labelEnd - start - 1,
-                    labelEnd + 2, targetEnd - labelEnd - 2, targetEnd + 1));
-                start = targetEnd;
+
+                int labelLength = labelEnd - start - 1;
+                if (labelLength == 0) continue;
+                if (labelEnd + 1 < value.Length && value[labelEnd + 1] == '(')
+                {
+                    int targetEnd = FindMarkdownLinkTargetEnd(value, labelEnd + 1);
+                    if (targetEnd < 0) continue;
+                    int targetStart = labelEnd + 2;
+                    int targetLength = targetEnd - targetStart;
+                    string destination = ParseMarkdownLinkDestination(value.Substring(targetStart, targetLength));
+                    links.Add(new MarkdownLinkSpan(start, start + 1, labelLength,
+                        targetStart, targetLength, targetEnd + 1, destination));
+                    start = targetEnd;
+                    continue;
+                }
+
+                string reference = null;
+                int end = labelEnd + 1;
+                int referenceStart = -1;
+                int referenceLength = 0;
+                if (end < value.Length && value[end] == '[')
+                {
+                    int referenceEnd = FindUnescapedCharacter(value, ']', end + 1);
+                    if (referenceEnd >= 0)
+                    {
+                        referenceStart = end + 1;
+                        referenceLength = referenceEnd - referenceStart;
+                        reference = referenceLength == 0
+                            ? value.Substring(start + 1, labelLength)
+                            : value.Substring(referenceStart, referenceLength);
+                        end = referenceEnd + 1;
+                    }
+                }
+                else if (end < value.Length && value[end] == ':')
+                {
+                    continue;
+                }
+                else
+                {
+                    referenceStart = start + 1;
+                    referenceLength = labelLength;
+                    reference = value.Substring(referenceStart, referenceLength);
+                }
+                string referenceDestination;
+                if (reference != null && TryGetMarkdownReferenceDestination(reference, out referenceDestination))
+                {
+                    links.Add(new MarkdownLinkSpan(start, start + 1, labelLength,
+                        referenceStart, referenceLength, end, referenceDestination));
+                    start = end - 1;
+                }
             }
             return links;
+        }
+
+        private bool TryGetMarkdownReferenceDestination(string reference, out string destination)
+        {
+            destination = null;
+            string normalized = Regex.Replace(reference.Trim(), @"\s+", " ").ToUpperInvariant();
+            if (normalized.Length == 0) return false;
+            for (int line = 0; line < _lineCache.Length; line++)
+            {
+                if (IsMarkdownCodeFenceLine(line)) continue;
+                string value = _lineCache[line].TrimEnd('\r');
+                Match match = Regex.Match(value,
+                    @"^ {0,3}\[([^\]]+)\]:[ \t]*(?:<([^>\r\n]+)>|(\S+))",
+                    RegexOptions.CultureInvariant);
+                if (!match.Success) continue;
+                string defined = Regex.Replace(match.Groups[1].Value.Trim(), @"\s+", " ").ToUpperInvariant();
+                if (!string.Equals(normalized, defined, StringComparison.Ordinal)) continue;
+                destination = match.Groups[2].Success ? match.Groups[2].Value : match.Groups[3].Value;
+                return destination.Length > 0;
+            }
+            return false;
+        }
+
+        private static string ParseMarkdownLinkDestination(string target)
+        {
+            target = target.Trim();
+            if (target.Length == 0) return string.Empty;
+            if (target[0] == '<')
+            {
+                int closingAngle = target.IndexOf('>');
+                if (closingAngle > 0) return target.Substring(1, closingAngle - 1);
+            }
+            int depth = 0;
+            char quote = '\0';
+            for (int index = 0; index < target.Length; index++)
+            {
+                char character = target[index];
+                if (character == '\\' && index + 1 < target.Length) { index++; continue; }
+                if (quote != '\0')
+                {
+                    if (character == quote) quote = '\0';
+                    continue;
+                }
+                if (character == '"' || character == '\'') { quote = character; continue; }
+                if (character == '(') { depth++; continue; }
+                if (character == ')' && depth > 0) { depth--; continue; }
+                if (char.IsWhiteSpace(character) && depth == 0)
+                    return target.Substring(0, index).Trim();
+            }
+            return target;
+        }
+
+        private static int FindMarkdownLinkTargetEnd(string value, int openParenthesis)
+        {
+            int depth = 0;
+            bool inAngleDestination = false;
+            char quote = '\0';
+            for (int position = openParenthesis + 1; position < value.Length; position++)
+            {
+                char character = value[position];
+                if (character == '\\' && position + 1 < value.Length) { position++; continue; }
+                if (quote != '\0')
+                {
+                    if (character == quote) quote = '\0';
+                    continue;
+                }
+                if (inAngleDestination)
+                {
+                    if (character == '>') inAngleDestination = false;
+                    continue;
+                }
+                if (character == '<' && position == openParenthesis + 1)
+                {
+                    inAngleDestination = true;
+                    continue;
+                }
+                if ((character == '"' || character == '\'') && depth == 0)
+                {
+                    quote = character;
+                    continue;
+                }
+                if (character == '(') { depth++; continue; }
+                if (character == ')')
+                {
+                    if (depth == 0) return position;
+                    depth--;
+                }
+            }
+            return -1;
+        }
+
+        private static bool IsEscaped(string value, int position)
+        {
+            int backslashes = 0;
+            for (int previous = position - 1; previous >= 0 && value[previous] == '\\'; previous--) backslashes++;
+            return backslashes % 2 != 0;
         }
 
         private static int FindUnescapedCharacter(string value, char target, int start)

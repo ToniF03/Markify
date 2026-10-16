@@ -180,6 +180,7 @@ namespace Markify.Textify
         private readonly DispatcherTimer _caretTimer;
         private int _caret;
         private int _selectionAnchor;
+        private int _taskCheckboxDisplaySuppressedAt = -1;
         private int _preferredColumn = -1;
         private bool _caretVisible = true;
         private const double LeftInset = 10;
@@ -910,11 +911,17 @@ namespace Markify.Textify
             MarkdownTaskMarker taskMarker;
             bool hasTaskMarker = TryGetMarkdownTaskMarkerForLine(line, out taskMarker);
             bool taskMarkersVisible = hasTaskMarker && MarkdownTaskMarkerIsVisible(line, taskMarker);
+            MarkdownHardBreakMarker hardBreakMarker;
+            bool hasHardBreakMarker = TryGetMarkdownHardBreakMarkerForLine(line, out hardBreakMarker);
+            bool hardBreakMarkerVisible = hasHardBreakMarker && MarkdownHardBreakMarkerIsVisible(line, hardBreakMarker);
             MarkdownMediaBlock mediaBlock;
             bool hasMediaBlock = TryGetMarkdownMediaBlockForLine(line, out mediaBlock);
             bool showMediaPreview = hasMediaBlock && !MarkdownMediaSourceIsVisible(line, mediaBlock);
             if (showMediaPreview)
                 for (int i = 0; i < hiddenMarkers.Length; i++) hiddenMarkers[i] = true;
+            if (hasHardBreakMarker && !hardBreakMarkerVisible)
+                for (int column = hardBreakMarker.Start; column < hardBreakMarker.End; column++)
+                    if (column >= 0 && column < hiddenMarkers.Length) hiddenMarkers[column] = true;
             foreach (MarkdownLinkSpan span in GetMarkdownLinksForLine(line))
             {
                 if (MarkdownLinkMarkersAreVisible(line, span)) continue;
@@ -1594,6 +1601,7 @@ namespace Markify.Textify
         private static void OnTextChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
         {
             var editor = (MarkifyTextBox)d;
+            editor._taskCheckboxDisplaySuppressedAt = -1;
             editor._secondaryCarets.Clear();
             editor._secondarySelections.Clear();
             editor._isRectangularSelection = false;

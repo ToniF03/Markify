@@ -15,6 +15,11 @@ namespace Markify.Textify
             private static readonly Brush CaretForeground = FrozenBrush(Color.FromRgb(45, 111, 176));
             private static readonly Brush MarkdownTableBorder = FrozenBrush(Color.FromRgb(190, 198, 207));
             private static readonly Brush MarkdownTableHeader = FrozenBrush(Color.FromRgb(239, 243, 248));
+            private static readonly Brush MarkdownTaskCheckboxFill = FrozenBrush(Color.FromRgb(248, 250, 252));
+            private static readonly Brush MarkdownTaskCheckboxCheckedFill = FrozenBrush(Color.FromRgb(48, 133, 91));
+            private static readonly Pen MarkdownTaskCheckboxBorder = FrozenPen(Color.FromRgb(112, 128, 144), 1.15);
+            private static readonly Pen MarkdownTaskCheckboxCheckedBorder = FrozenPen(Color.FromRgb(48, 133, 91), 1.15);
+            private static readonly Pen MarkdownTaskCheckboxCheckPen = FrozenPen(Colors.White, 1.6);
             private readonly MarkifyTextBox _editor;
             public EditorSurface(MarkifyTextBox editor)
             {
@@ -29,6 +34,13 @@ namespace Markify.Textify
                 var brush = new SolidColorBrush(color);
                 brush.Freeze();
                 return brush;
+            }
+
+            private static Pen FrozenPen(Color color, double thickness)
+            {
+                var pen = new Pen(FrozenBrush(color), thickness);
+                pen.Freeze();
+                return pen;
             }
 
             protected override Size MeasureOverride(Size availableSize)
@@ -270,6 +282,11 @@ namespace Markify.Textify
                             }
                         }
                     }
+                    MarkifyTextBox.MarkdownTaskMarker taskMarker;
+                    Rect taskCheckboxBounds;
+                    if (_editor.TryGetMarkdownTaskCheckboxBounds(documentLine, renderedSegment,
+                        textOrigin, y, rowHeight, true, out taskMarker, out taskCheckboxBounds))
+                        DrawMarkdownTaskCheckbox(dc, taskMarker, taskCheckboxBounds);
                     if (_editor.HasFocus && _editor.CaretVisible && _editor.SelectionLength == 0 &&
                         (!_editor.IsRectangularSelection || _editor.GetSelectionSpansForLine(documentLine).Count == 0) &&
                         _editor.VisibleRowForPosition(_editor.Caret) == row &&
@@ -417,6 +434,20 @@ namespace Markify.Textify
                     }
                     x += columnWidth;
                 }
+            }
+
+            private void DrawMarkdownTaskCheckbox(DrawingContext dc,
+                MarkifyTextBox.MarkdownTaskMarker marker, Rect bounds)
+            {
+                dc.DrawRoundedRectangle(marker.IsChecked ? MarkdownTaskCheckboxCheckedFill : MarkdownTaskCheckboxFill,
+                    marker.IsChecked ? MarkdownTaskCheckboxCheckedBorder : MarkdownTaskCheckboxBorder,
+                    bounds, 2.5, 2.5);
+                if (!marker.IsChecked) return;
+                var first = new Point(bounds.Left + bounds.Width * 0.24, bounds.Top + bounds.Height * 0.52);
+                var middle = new Point(bounds.Left + bounds.Width * 0.43, bounds.Top + bounds.Height * 0.72);
+                var last = new Point(bounds.Left + bounds.Width * 0.77, bounds.Top + bounds.Height * 0.31);
+                dc.DrawLine(MarkdownTaskCheckboxCheckPen, first, middle);
+                dc.DrawLine(MarkdownTaskCheckboxCheckPen, middle, last);
             }
 
             private void DrawBracketHighlight(DrawingContext dc, MarkifyTextBox.RenderedTextSegment segment,

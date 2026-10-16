@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Input;
 
@@ -105,6 +106,7 @@ namespace Markify.Textify
 
         private void ReplaceSelection(string insertion)
         {
+            _taskCheckboxDisplaySuppressedAt = -1;
             if (_isRectangularSelection || _secondaryCarets.Count > 0 || _secondarySelections.Count > 0)
             {
                 ReplaceMultipleCarets(insertion);
@@ -220,6 +222,7 @@ namespace Markify.Textify
 
         private void MoveTo(int position, bool extend, bool preservePreferredColumn = false)
         {
+            _taskCheckboxDisplaySuppressedAt = -1;
             _secondaryCarets.Clear();
             _secondarySelections.Clear();
             _isRectangularSelection = false;
@@ -307,6 +310,18 @@ namespace Markify.Textify
                 (modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) == (ModifierKeys.Control | ModifierKeys.Alt);
             Focus(); _surface.Focus();
             Point point = e.GetPosition(_surface);
+            if (!IsReadOnly && !extendSelection && !rectangle && !addCaret &&
+                TryToggleMarkdownTaskCheckboxAtPoint(point))
+            {
+                e.Handled = true;
+                return;
+            }
+            if ((modifiers & ModifierKeys.Control) != 0 && (modifiers & ModifierKeys.Alt) == 0 &&
+                TryOpenMarkdownLinkAtPoint(point))
+            {
+                e.Handled = true;
+                return;
+            }
             if (rectangle)
             {
                 int position = PositionFromPoint(point);
@@ -330,6 +345,7 @@ namespace Markify.Textify
             _secondaryCarets.Clear();
             _secondarySelections.Clear();
             _preferredColumn = -1;
+            _taskCheckboxDisplaySuppressedAt = -1;
             _caret = PositionFromPoint(point);
             if (extendSelection)
                 _caret = ClampMarkdownTablePositionToCell(_selectionAnchor, _caret);
@@ -350,6 +366,7 @@ namespace Markify.Textify
                     RefreshMarkdownTableSourceVisibility();
                     return;
                 }
+                _taskCheckboxDisplaySuppressedAt = -1;
                 _caret = ClampMarkdownTablePositionToCell(_selectionAnchor, PositionFromPoint(point));
                 RefreshMarkdownTableSourceVisibility();
                 _surface.InvalidateMeasure();
@@ -359,8 +376,101 @@ namespace Markify.Textify
             }
             else
             {
-                _surface.Cursor = Cursors.IBeam;
+                Point point = e.GetPosition(_surface);
+                bool overTask = !IsReadOnly && IsMarkdownTaskCheckboxAtPoint(point);
+                bool controlClickTarget = (Keyboard.Modifiers & ModifierKeys.Control) != 0 &&
+                    IsMarkdownLinkAtPoint(point);
+                _surface.Cursor = overTask || controlClickTarget ? Cursors.Hand : Cursors.IBeam;
             }
+        }
+
+        private bool IsMarkdownTaskCheckboxAtPoint(Point point)
+        {
+            int row = VisibleRowAtY(point.Y);
+            int line = DocumentLineAtVisibleRow(row);
+            int lineStart = GetLineStart(line);
+            int lineLength = Math.Max(0, GetLineEndAtLine(line) - lineStart);
+            int segmentStart = RenderedStartColumnForRow(row);
+            int segmentEnd = Math.Min(VisibleRowStartColumn(row) + VisibleRowLength(row), lineLength);
+            RenderedTextSegment segment = CreateRenderedTextSegment(line, segmentStart, segmentEnd);
+            MarkdownTaskMarker marker;
+            Rect bounds;
+            if (!TryGetMarkdownTaskCheckboxBounds(line, segment, TextOriginForLine(line),
+                TopInset + VisibleRowTop(row), LineHeightForVisibleRow(row), false, out marker, out bounds))
+                return false;
+            bounds.Inflate(2, 1);
+            return bounds.Contains(point);
+        }
+
+        private bool IsMarkdownLinkAtPoint(Point point)
+        {
+            int position = PositionFromPoint(point);
+            int line = LineIndexAt(position);
+            int column = position - GetLineStart(line);
+            foreach (MarkdownLinkSpan link in GetMarkdownLinksForLine(line))
+                if (column >= link.LabelStart && column <= link.LabelStart + link.LabelLength)
+                    return true;
+            return false;
+        }
+
+        private bool TryToggleMarkdownTaskCheckboxAtPoint(Point point)
+        {
+            int row = VisibleRowAtY(point.Y);
+            int line = DocumentLineAtVisibleRow(row);
+            int lineStart = GetLineStart(line);
+            int lineLength = Math.Max(0, GetLineEndAtLine(line) - lineStart);
+            int segmentStart = RenderedStartColumnForRow(row);
+            int segmentEnd = Math.Min(VisibleRowStartColumn(row) + VisibleRowLength(row), lineLength);
+            RenderedTextSegment segment = CreateRenderedTextSegment(line, segmentStart, segmentEnd);
+            MarkdownTaskMarker marker;
+            Rect bounds;
+            if (!TryGetMarkdownTaskCheckboxBounds(line, segment, TextOriginForLine(line),
+                TopInset + VisibleRowTop(row), LineHeightForVisibleRow(row), false, out marker, out bounds)) return false;
+            bounds.Inflate(2, 1);
+            if (!bounds.Contains(point)) return false;
+
+            int absoluteStart = lineStart + marker.Start;
+            int checkboxState = absoluteStart + 1;
+            string updated = Text.Substring(0, checkboxState) + (marker.IsChecked ? " " : "x") +
+                Text.Substring(checkboxState + 1);
+            SaveUndo();
+            _caret = _selectionAnchor = absoluteStart + (marker.End - marker.Start);
+            _secondaryCarets.Clear();
+            _secondarySelections.Clear();
+            _isRectangularSelection = false;
+            Text = updated;
+            _taskCheckboxDisplaySuppressedAt = absoluteStart;
+            Changed();
+            return true;
+        }
+
+        private bool TryOpenMarkdownLinkAtPoint(Point point)
+        {
+            int position = PositionFromPoint(point);
+            int line = LineIndexAt(position);
+            int column = position - GetLineStart(line);
+            foreach (MarkdownLinkSpan link in GetMarkdownLinksForLine(line))
+            {
+                if (column < link.LabelStart || column > link.LabelStart + link.LabelLength ||
+                    string.IsNullOrWhiteSpace(link.Destination)) continue;
+                string destination = link.Destination.Trim();
+                if (destination.StartsWith("www.", StringComparison.OrdinalIgnoreCase))
+                    destination = "https://" + destination;
+                Uri uri;
+                if (!Uri.TryCreate(destination, UriKind.Absolute, out uri) ||
+                    (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps &&
+                     uri.Scheme != Uri.UriSchemeMailto)) return false;
+                try
+                {
+                    Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+            return false;
         }
 
         private int PositionFromPoint(Point point)

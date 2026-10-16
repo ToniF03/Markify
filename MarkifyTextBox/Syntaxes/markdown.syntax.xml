@@ -19,7 +19,9 @@
     <Rule foreground="#6A9955" pattern="\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)+\|?" />
     <Rule foreground="#808080" pattern="\|" />
 
+    <!-- Plain source newlines are soft breaks; two trailing spaces or a final backslash mark a hard break. -->
     <!-- Inline emphasis -->
+    <Rule foreground="#D7BA7D" pattern="(?: {2,}|\\)$" />
     <Rule foreground="#DCDCAA" pattern="(\*\*|__)(?=\S).+?(?&lt;=\S)\1" />
     <Rule foreground="#DCDCAA" pattern="(?&lt;!\*)\*(?!\*)\S(?:[^*\r\n]*\S)?\*(?!\*)" />
     <Rule foreground="#DCDCAA" pattern="(?&lt;!_)_(?!_)\S(?:[^_\r\n]*\S)?_(?!_)" />
@@ -28,6 +30,7 @@
     <Rule foreground="#C586C0" pattern="(?&lt;!~)~(?!~)\S(?:[^~\r\n]*\S)?~(?!~)" />
 
     <!-- Links, references, and media -->
+    <Rule foreground="#4EC9B0" pattern="!?\[[^\]\r\n]+\]\((?:&lt;[^&gt;\r\n]*&gt;|\([^()\r\n]*\)|[^()\r\n])+(?:[ \t]+(?:&quot;[^&quot;\r\n]*&quot;|'[^'\r\n]*'|\([^ )\r\n]*\)))?\)" />
     <Rule foreground="#4EC9B0" pattern="!?(?&lt;!\])\[[^\]\r\n]*\]\([^)\r\n]*\)" />
     <Rule foreground="#4EC9B0" pattern="!?\[[^\]\r\n]+\](?:\[[^\]\r\n]*\])" />
     <Rule foreground="#4EC9B0" pattern="\[\^[^\]\r\n]+\]" />
