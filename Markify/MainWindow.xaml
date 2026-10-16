@@ -14,6 +14,7 @@
                             EnableMarkdownHeadings="True"
                             EnableMarkdownBold="True"
                             EnableMarkdownItalic="True"
+                            EnableMarkdownSuperSubscript="True"
                             EnableMarkdownInlineCode="True"
                             EnableMarkdownCodeBlocks="True"
                             EnableMarkdownLists="True"

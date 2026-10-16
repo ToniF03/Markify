@@ -66,6 +66,20 @@ namespace Markify.Textify
             }
         }
 
+        internal struct MarkdownScriptSpan
+        {
+            public int ContentStart;
+            public int ContentLength;
+            public bool IsSuperscript;
+
+            public MarkdownScriptSpan(int contentStart, int contentLength, bool isSuperscript)
+            {
+                ContentStart = contentStart;
+                ContentLength = contentLength;
+                IsSuperscript = isSuperscript;
+            }
+        }
+
         public static readonly DependencyProperty TextProperty = DependencyProperty.Register(
             nameof(Text), typeof(string), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(string.Empty, OnTextChanged));
         public static readonly DependencyProperty ShowBorderProperty = DependencyProperty.Register(
@@ -80,6 +94,8 @@ namespace Markify.Textify
             nameof(EnableMarkdownBold), typeof(bool), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(true, OnVisualOptionChanged));
         public static readonly DependencyProperty EnableMarkdownItalicProperty = DependencyProperty.Register(
             nameof(EnableMarkdownItalic), typeof(bool), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(true, OnVisualOptionChanged));
+        public static readonly DependencyProperty EnableMarkdownSuperSubscriptProperty = DependencyProperty.Register(
+            nameof(EnableMarkdownSuperSubscript), typeof(bool), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(true, OnVisualOptionChanged));
         public static readonly DependencyProperty EnableMarkdownInlineCodeProperty = DependencyProperty.Register(
             nameof(EnableMarkdownInlineCode), typeof(bool), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(true, OnVisualOptionChanged));
         public static readonly DependencyProperty EnableMarkdownCodeBlocksProperty = DependencyProperty.Register(
@@ -181,6 +197,7 @@ namespace Markify.Textify
         public bool EnableMarkdownHeadings { get { return (bool)GetValue(EnableMarkdownHeadingsProperty); } set { SetValue(EnableMarkdownHeadingsProperty, value); } }
         public bool EnableMarkdownBold { get { return (bool)GetValue(EnableMarkdownBoldProperty); } set { SetValue(EnableMarkdownBoldProperty, value); } }
         public bool EnableMarkdownItalic { get { return (bool)GetValue(EnableMarkdownItalicProperty); } set { SetValue(EnableMarkdownItalicProperty, value); } }
+        public bool EnableMarkdownSuperSubscript { get { return (bool)GetValue(EnableMarkdownSuperSubscriptProperty); } set { SetValue(EnableMarkdownSuperSubscriptProperty, value); } }
         public bool EnableMarkdownInlineCode { get { return (bool)GetValue(EnableMarkdownInlineCodeProperty); } set { SetValue(EnableMarkdownInlineCodeProperty, value); } }
         public bool EnableMarkdownCodeBlocks { get { return (bool)GetValue(EnableMarkdownCodeBlocksProperty); } set { SetValue(EnableMarkdownCodeBlocksProperty, value); } }
         public bool EnableMarkdownLists { get { return (bool)GetValue(EnableMarkdownListsProperty); } set { SetValue(EnableMarkdownListsProperty, value); } }
@@ -548,6 +565,63 @@ namespace Markify.Textify
             return spans;
         }
 
+        internal List<MarkdownScriptSpan> GetMarkdownScriptSpansForLine(int line)
+        {
+            var spans = new List<MarkdownScriptSpan>();
+            if (!EnableMarkdownSuperSubscript || IsMarkdownCodeFenceLine(line) || line < 0 || line >= _lineCache.Length)
+                return spans;
+
+            string value = _lineCache[line].TrimEnd('\r');
+            char[] delimiters = { '^', '~' };
+            foreach (char delimiter in delimiters)
+            {
+                int searchFrom = 0;
+                while (searchFrom < value.Length)
+                {
+                    int opening = searchFrom;
+                    while (opening < value.Length && value[opening] != delimiter) opening++;
+                    if (opening >= value.Length) break;
+
+                    int openingRunLength = MarkdownEmphasisDelimiterRunLength(value, opening, delimiter);
+                    bool openingIsValid = openingRunLength == 1 && opening + 1 < value.Length &&
+                        !char.IsWhiteSpace(value[opening + 1]) && !IsMarkdownEscaped(value, opening) &&
+                        !IsMarkdownInlineCodeContentColumn(line, opening);
+                    if (!openingIsValid)
+                    {
+                        searchFrom = opening + openingRunLength;
+                        continue;
+                    }
+
+                    int closing = opening + 1;
+                    bool foundClosing = false;
+                    while (closing < value.Length)
+                    {
+                        if (value[closing] != delimiter)
+                        {
+                            closing++;
+                            continue;
+                        }
+
+                        int closingRunLength = MarkdownEmphasisDelimiterRunLength(value, closing, delimiter);
+                        bool closingIsValid = closingRunLength == 1 && closing > opening + 1 &&
+                            !char.IsWhiteSpace(value[closing - 1]) && !IsMarkdownEscaped(value, closing) &&
+                            !IsMarkdownInlineCodeContentColumn(line, closing);
+                        if (closingIsValid)
+                        {
+                            spans.Add(new MarkdownScriptSpan(opening + 1, closing - opening - 1, delimiter == '^'));
+                            searchFrom = closing + 1;
+                            foundClosing = true;
+                            break;
+                        }
+                        closing += closingRunLength;
+                    }
+
+                    if (!foundClosing) searchFrom = opening + 1;
+                }
+            }
+            return spans;
+        }
+
         private static int MarkdownEmphasisDelimiterRunLength(string value, int start, char delimiter)
         {
             int end = start;
@@ -656,6 +730,19 @@ namespace Markify.Textify
             return false;
         }
 
+        internal bool MarkdownScriptMarkersAreVisible(int line, MarkdownScriptSpan span)
+        {
+            int lineStart = GetLineStart(line);
+            int pairStart = lineStart + span.ContentStart - 1;
+            int pairEnd = lineStart + span.ContentStart + span.ContentLength + 1;
+            if (_caret >= pairStart && _caret <= pairEnd) return true;
+            foreach (int caret in AdditionalCaretPositions)
+                if (caret >= pairStart && caret <= pairEnd) return true;
+            foreach (SelectionSpan selection in GetSelectionSpansForLine(line))
+                if (selection.Start < pairEnd && selection.Start + selection.Length > pairStart) return true;
+            return false;
+        }
+
         internal RenderedTextSegment CreateRenderedTextSegment(int line, int sourceStartColumn, int sourceEndColumn)
         {
             string value = _lineCache[Math.Max(0, Math.Min(_lineCache.Length - 1, line))].TrimEnd('\r');
@@ -694,6 +781,14 @@ namespace Markify.Textify
                 if (MarkdownItalicMarkersAreVisible(line, span)) continue;
                 int opening = span.Start - 1;
                 int closing = span.Start + span.Length;
+                if (opening >= 0 && opening < hiddenMarkers.Length) hiddenMarkers[opening] = true;
+                if (closing >= 0 && closing < hiddenMarkers.Length) hiddenMarkers[closing] = true;
+            }
+            foreach (MarkdownScriptSpan span in GetMarkdownScriptSpansForLine(line))
+            {
+                if (MarkdownScriptMarkersAreVisible(line, span)) continue;
+                int opening = span.ContentStart - 1;
+                int closing = span.ContentStart + span.ContentLength;
                 if (opening >= 0 && opening < hiddenMarkers.Length) hiddenMarkers[opening] = true;
                 if (closing >= 0 && closing < hiddenMarkers.Length) hiddenMarkers[closing] = true;
             }
@@ -792,6 +887,35 @@ namespace Markify.Textify
             }
         }
 
+        internal void ApplyMarkdownScriptStyle(FormattedText formatted, int line, int[] sourceColumns)
+        {
+            if (sourceColumns == null || sourceColumns.Length == 0) return;
+            double scriptFontSize = Math.Max(1, FontSizeForLine(line) * 0.72);
+            foreach (MarkdownScriptSpan span in GetMarkdownScriptSpansForLine(line))
+            {
+                int index = 0;
+                while (index < sourceColumns.Length)
+                {
+                    while (index < sourceColumns.Length &&
+                        (sourceColumns[index] < span.ContentStart || sourceColumns[index] >= span.ContentStart + span.ContentLength)) index++;
+                    int start = index;
+                    while (index < sourceColumns.Length &&
+                        sourceColumns[index] >= span.ContentStart && sourceColumns[index] < span.ContentStart + span.ContentLength) index++;
+                    if (index > start) formatted.SetFontSize(scriptFontSize, start, index - start);
+                }
+            }
+        }
+
+        internal static int MarkdownScriptKindForSourceColumn(IList<MarkdownScriptSpan> spans, int sourceColumn)
+        {
+            MarkdownScriptSpan? innermost = null;
+            foreach (MarkdownScriptSpan span in spans)
+                if (sourceColumn >= span.ContentStart && sourceColumn < span.ContentStart + span.ContentLength &&
+                    (!innermost.HasValue || span.ContentLength < innermost.Value.ContentLength))
+                    innermost = span;
+            return !innermost.HasValue ? 0 : (innermost.Value.IsSuperscript ? 1 : 2);
+        }
+
         internal void ApplyMarkdownInlineCode(FormattedText formatted, int line, int[] sourceColumns)
         {
             if (!EnableMarkdownInlineCode || sourceColumns == null || sourceColumns.Length == 0) return;
@@ -852,6 +976,7 @@ namespace Markify.Textify
             Array.Copy(segment.SourceColumns, sourceColumns, displayLength);
             ApplyMarkdownBold(formatted, line, sourceColumns);
             ApplyMarkdownItalic(formatted, line, sourceColumns);
+            ApplyMarkdownScriptStyle(formatted, line, sourceColumns);
             ApplyMarkdownInlineCode(formatted, line, sourceColumns);
             ApplyMarkdownCodeFenceStyle(formatted, line, displayLength);
             ApplyMarkdownListMarkerStyle(formatted, line, sourceColumns);
@@ -966,7 +1091,21 @@ namespace Markify.Textify
                     italicSignature += (italicStart - sourceStartColumn) + "," + (italicEnd - italicStart) + ";";
                 }
             }
-            if (level == 0 && !containsBoldText && !containsItalicText && !containsCodeText && !replaceListMarkerWithBullet)
+            bool containsScriptText = false;
+            string scriptSignature = string.Empty;
+            foreach (MarkdownScriptSpan span in GetMarkdownScriptSpansForLine(line))
+            {
+                int scriptStart = Math.Max(span.ContentStart, sourceStartColumn);
+                int scriptEnd = Math.Min(span.ContentStart + span.ContentLength, sourceEndColumn);
+                if (scriptEnd > scriptStart)
+                {
+                    containsScriptText = true;
+                    scriptSignature += (span.IsSuperscript ? "^" : "~") +
+                        (scriptStart - sourceStartColumn) + "," + (scriptEnd - scriptStart) + ";";
+                }
+            }
+            if (level == 0 && !containsBoldText && !containsItalicText && !containsScriptText &&
+                !containsCodeText && !replaceListMarkerWithBullet)
                 return MeasureTextWidth(value);
             var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
             if (Math.Abs(_metricDpi - dpi) > 0.001)
@@ -975,7 +1114,7 @@ namespace Markify.Textify
                 _metricDpi = dpi;
             }
             string cacheKey = "\u0001styled" + level + ":" + sourceStartColumn + ":" + boldSignature + ":" +
-                italicSignature + ":" + codeSignature + ":" + renderedValue;
+                italicSignature + ":" + scriptSignature + ":" + codeSignature + ":" + renderedValue;
             double cachedWidth;
             if (_textWidthCache.TryGetValue(cacheKey, out cachedWidth)) return cachedWidth;
             var typeface = new Typeface(FontFamily, FontStyles.Normal,
@@ -986,6 +1125,7 @@ namespace Markify.Textify
             var sourceColumns = new int[value.Length];
             for (int i = 0; i < sourceColumns.Length; i++) sourceColumns[i] = sourceStartColumn + i;
             ApplyMarkdownItalic(formatted, line, sourceColumns);
+            ApplyMarkdownScriptStyle(formatted, line, sourceColumns);
             ApplyMarkdownInlineCode(formatted, line, sourceColumns);
             ApplyMarkdownCodeFenceStyle(formatted, line, value.Length);
             ApplyMarkdownListMarkerStyle(formatted, line, sourceColumns);
@@ -1176,7 +1316,7 @@ namespace Markify.Textify
             var editor = (MarkifyTextBox)d;
             if (e.Property == FontFamilyProperty || e.Property == FontSizeProperty ||
                 e.Property == EnableMarkdownHeadingsProperty || e.Property == EnableMarkdownBoldProperty ||
-                e.Property == EnableMarkdownItalicProperty ||
+                e.Property == EnableMarkdownItalicProperty || e.Property == EnableMarkdownSuperSubscriptProperty ||
                 e.Property == EnableMarkdownInlineCodeProperty || e.Property == EnableMarkdownCodeBlocksProperty ||
                 e.Property == EnableMarkdownListsProperty || e.Property == EnableMarkdownHorizontalRulesProperty)
             {

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
@@ -153,15 +154,59 @@ namespace Markify.Textify
                         DrawBracketHighlight(dc, renderedSegment, y, bracketCandidateColumn, documentLine, rowHeight);
                     if (line.Length > 0)
                     {
-                        var formatted = MakeText(line, typeface, lineBrush, dpi, fontSize);
-                        if (_editor.EnableSyntaxHighlighting)
-                            _editor.ApplySyntaxHighlighting(formatted, line, documentLine);
-                        _editor.ApplyMarkdownBold(formatted, documentLine, renderedSegment.SourceColumns);
-                        _editor.ApplyMarkdownItalic(formatted, documentLine, renderedSegment.SourceColumns);
-                        _editor.ApplyMarkdownInlineCode(formatted, documentLine, renderedSegment.SourceColumns);
-                        _editor.ApplyMarkdownCodeFenceStyle(formatted, documentLine, line.Length);
-                        _editor.ApplyMarkdownListMarkerStyle(formatted, documentLine, renderedSegment.SourceColumns);
-                        dc.DrawText(formatted, new Point(textOrigin, y + Math.Max(0, (rowHeight - formatted.Height) / 2)));
+                        List<MarkifyTextBox.MarkdownScriptSpan> scriptSpans =
+                            _editor.GetMarkdownScriptSpansForLine(documentLine);
+                        if (scriptSpans.Count == 0)
+                        {
+                            var formatted = MakeText(line, typeface, lineBrush, dpi, fontSize);
+                            if (_editor.EnableSyntaxHighlighting)
+                                _editor.ApplySyntaxHighlighting(formatted, line, documentLine);
+                            _editor.ApplyMarkdownBold(formatted, documentLine, renderedSegment.SourceColumns);
+                            _editor.ApplyMarkdownItalic(formatted, documentLine, renderedSegment.SourceColumns);
+                            _editor.ApplyMarkdownScriptStyle(formatted, documentLine, renderedSegment.SourceColumns);
+                            _editor.ApplyMarkdownInlineCode(formatted, documentLine, renderedSegment.SourceColumns);
+                            _editor.ApplyMarkdownCodeFenceStyle(formatted, documentLine, line.Length);
+                            _editor.ApplyMarkdownListMarkerStyle(formatted, documentLine, renderedSegment.SourceColumns);
+                            dc.DrawText(formatted, new Point(textOrigin, y + Math.Max(0, (rowHeight - formatted.Height) / 2)));
+                        }
+                        else
+                        {
+                            var baseMetrics = MakeText("M", typeface, lineBrush, dpi, fontSize);
+                            double baseTextY = y + Math.Max(0, (rowHeight - baseMetrics.Height) / 2);
+                            int displayStart = 0;
+                            while (displayStart < line.Length)
+                            {
+                                int scriptKind = MarkifyTextBox.MarkdownScriptKindForSourceColumn(
+                                    scriptSpans, renderedSegment.SourceColumns[displayStart]);
+                                int displayEnd = displayStart + 1;
+                                while (displayEnd < line.Length &&
+                                    MarkifyTextBox.MarkdownScriptKindForSourceColumn(
+                                        scriptSpans, renderedSegment.SourceColumns[displayEnd]) == scriptKind)
+                                    displayEnd++;
+
+                                int runLength = displayEnd - displayStart;
+                                string runText = line.Substring(displayStart, runLength);
+                                var formatted = MakeText(runText, typeface, lineBrush, dpi, fontSize);
+                                var runSourceColumns = new int[runLength];
+                                Array.Copy(renderedSegment.SourceColumns, displayStart, runSourceColumns, 0, runLength);
+                                if (_editor.EnableSyntaxHighlighting)
+                                    _editor.ApplySyntaxHighlighting(formatted, line, documentLine, displayStart, runLength);
+                                _editor.ApplyMarkdownBold(formatted, documentLine, runSourceColumns);
+                                _editor.ApplyMarkdownItalic(formatted, documentLine, runSourceColumns);
+                                _editor.ApplyMarkdownScriptStyle(formatted, documentLine, runSourceColumns);
+                                _editor.ApplyMarkdownInlineCode(formatted, documentLine, runSourceColumns);
+                                _editor.ApplyMarkdownCodeFenceStyle(formatted, documentLine, runLength);
+                                _editor.ApplyMarkdownListMarkerStyle(formatted, documentLine, runSourceColumns);
+
+                                double x = textOrigin +
+                                    _editor.MeasureRenderedTextWidthForLine(renderedSegment, documentLine, displayStart);
+                                double yOffset = baseTextY + baseMetrics.Baseline - formatted.Baseline;
+                                if (scriptKind == 1) yOffset -= fontSize * 0.27;
+                                else if (scriptKind == 2) yOffset += fontSize * 0.18;
+                                dc.DrawText(formatted, new Point(x, yOffset));
+                                displayStart = displayEnd;
+                            }
+                        }
                     }
                     if (_editor.HasFocus && _editor.CaretVisible && _editor.SelectionLength == 0 &&
                         (!_editor.IsRectangularSelection || _editor.GetSelectionSpansForLine(documentLine).Count == 0) &&

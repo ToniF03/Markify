@@ -85,13 +85,22 @@ namespace Markify.Textify
 
         internal void ApplySyntaxHighlighting(FormattedText formatted, string line, int documentLine)
         {
-            if (!EnableSyntaxHighlighting) return;
+            ApplySyntaxHighlighting(formatted, line, documentLine, 0, line.Length);
+        }
+
+        internal void ApplySyntaxHighlighting(FormattedText formatted, string line, int documentLine,
+            int displayStart, int displayLength)
+        {
+            if (!EnableSyntaxHighlighting || displayLength <= 0) return;
+            int displayEnd = displayStart + displayLength;
             foreach (SyntaxHighlightRule rule in SyntaxHighlighting)
             {
                 foreach (Match match in rule.Matcher.Matches(line))
                 {
-                    if (match.Length > 0 && match.Index + match.Length <= line.Length)
-                        formatted.SetForegroundBrush(rule.Foreground, match.Index, match.Length);
+                    int start = Math.Max(match.Index, displayStart);
+                    int end = Math.Min(match.Index + match.Length, displayEnd);
+                    if (end > start)
+                        formatted.SetForegroundBrush(rule.Foreground, start - displayStart, end - start);
                 }
             }
         }
