@@ -13,6 +13,8 @@
                             Text=""
                             EnableMarkdownHeadings="True"
                             EnableMarkdownBold="True"
+                            EnableMarkdownInlineCode="True"
+                            EnableMarkdownCodeBlocks="True"
                             EnableMarkdownHorizontalRules="True"
                             IsHorizontalScrollEnabled="True"
                             FontFamily="Consolas"

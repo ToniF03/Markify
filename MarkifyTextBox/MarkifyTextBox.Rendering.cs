@@ -37,6 +37,9 @@ namespace Markify.Textify
                 {
                     for (int lineIndex = 0; lineIndex < lines.Length; lineIndex++)
                     {
+                        if (_editor.IsMarkdownCodeFenceLine(lineIndex) &&
+                            !_editor.IsMarkdownCodeFenceBodyLine(lineIndex) &&
+                            !_editor.MarkdownCodeFenceMarkersAreVisible(lineIndex)) continue;
                         if (_editor.IsMarkdownHorizontalRuleLine(lineIndex))
                         {
                             containsHorizontalRule = true;
@@ -88,6 +91,11 @@ namespace Markify.Textify
                         dc.DrawRectangle(_editor.CurrentLineBackground, null, new Rect(0, y, ActualWidth, rowHeight));
                     if (_editor.IsWholeLineSelected(documentLine))
                         dc.DrawRectangle(SelectionBackground, null, new Rect(0, y, ActualWidth, rowHeight));
+                    if (_editor.IsMarkdownCodeFenceLine(documentLine))
+                        dc.DrawRectangle(MarkifyTextBox.MarkdownInlineCodeBackground, null,
+                            new Rect(Math.Max(0, _editor.TextOrigin - 4), y,
+                                Math.Max(0, ActualWidth - _editor.TextOrigin + 4), rowHeight));
+                    DrawMarkdownInlineCodeBackgrounds(dc, renderedSegment, documentLine, y, rowHeight);
                     if (_editor.IsMarkdownHorizontalRuleLine(documentLine) &&
                         !_editor.MarkdownHorizontalRuleSourceIsVisible(documentLine))
                     {
@@ -146,6 +154,8 @@ namespace Markify.Textify
                         if (_editor.EnableSyntaxHighlighting)
                             _editor.ApplySyntaxHighlighting(formatted, line, documentLine);
                         _editor.ApplyMarkdownBold(formatted, documentLine, renderedSegment.SourceColumns);
+                        _editor.ApplyMarkdownInlineCode(formatted, documentLine, renderedSegment.SourceColumns);
+                        _editor.ApplyMarkdownCodeFenceStyle(formatted, documentLine, line.Length);
                         dc.DrawText(formatted, new Point(_editor.TextOrigin, y + Math.Max(0, (rowHeight - formatted.Height) / 2)));
                     }
                     if (_editor.HasFocus && _editor.CaretVisible && _editor.SelectionLength == 0 &&
@@ -168,6 +178,33 @@ namespace Markify.Textify
                         double x = _editor.TextOrigin +
                             _editor.MeasureRenderedTextWidthForLine(renderedSegment, documentLine, localColumn);
                         dc.DrawRectangle(CaretForeground, null, new Rect(x, y + 2, 1.2, rowHeight - 4));
+                    }
+                }
+            }
+
+            private void DrawMarkdownInlineCodeBackgrounds(DrawingContext dc, MarkifyTextBox.RenderedTextSegment segment,
+                int line, double y, double rowHeight)
+            {
+                foreach (MarkifyTextBox.MarkdownInlineCodeSpan span in _editor.GetMarkdownInlineCodeSpansForLine(line))
+                {
+                    int index = 0;
+                    while (index < segment.SourceColumns.Length)
+                    {
+                        while (index < segment.SourceColumns.Length &&
+                            (segment.SourceColumns[index] < span.ContentStart ||
+                             segment.SourceColumns[index] >= span.ContentStart + span.ContentLength)) index++;
+                        int codeStart = index;
+                        while (index < segment.SourceColumns.Length &&
+                            segment.SourceColumns[index] >= span.ContentStart &&
+                            segment.SourceColumns[index] < span.ContentStart + span.ContentLength) index++;
+                        if (index <= codeStart) continue;
+
+                        double startX = _editor.TextOrigin +
+                            _editor.MeasureRenderedTextWidthForLine(segment, line, codeStart);
+                        double endX = _editor.TextOrigin +
+                            _editor.MeasureRenderedTextWidthForLine(segment, line, index);
+                        var background = new Rect(startX - 2, y + 2, endX - startX + 4, Math.Max(0, rowHeight - 4));
+                        dc.DrawRoundedRectangle(MarkifyTextBox.MarkdownInlineCodeBackground, null, background, 2, 2);
                     }
                 }
             }
