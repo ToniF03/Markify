@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Markify/Markify.csproj" Id="54ad44f0-dd10-4a7b-9811-7c0b2a3aecc1" />
+  <Project Path="MarkifyTextBox/MarkifyTextBox.csproj" />
+</Solution>

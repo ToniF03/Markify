@@ -1,0 +1,8 @@
+C:\Users\ToniFey\Documents\Projects\Markify\MarkifyTextBox\bin\Debug\MarkifyTextBox.dll
+C:\Users\ToniFey\Documents\Projects\Markify\MarkifyTextBox\bin\Debug\MarkifyTextBox.pdb
+C:\Users\ToniFey\Documents\Projects\Markify\MarkifyTextBox\obj\Debug\MarkifyTextBox.csproj.AssemblyReference.cache
+C:\Users\ToniFey\Documents\Projects\Markify\MarkifyTextBox\obj\Debug\MarkifyTextBox.csproj.CoreCompileInputs.cache
+C:\Users\ToniFey\Documents\Projects\Markify\MarkifyTextBox\obj\Debug\MarkifyTextBox.dll
+C:\Users\ToniFey\Documents\Projects\Markify\MarkifyTextBox\obj\Debug\MarkifyTextBox.pdb
+C:\Users\ToniFey\AppData\Local\Packages\sandbox.{7974f592-fc62-4235-a880-84be25d0cba5}\AC\Temp\MarkifyBuildCheck\MarkifyTextBox.dll
+C:\Users\ToniFey\AppData\Local\Packages\sandbox.{7974f592-fc62-4235-a880-84be25d0cba5}\AC\Temp\MarkifyBuildCheck\MarkifyTextBox.pdb
