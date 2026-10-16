@@ -144,6 +144,7 @@ namespace Markify.Textify
             _isRectangularSelection = false;
             _secondaryCarets.Add(position);
             _secondaryCarets.Sort();
+            _surface.InvalidateMeasure();
             _surface.InvalidateVisual();
             PublishSelectionState();
         }
@@ -153,6 +154,7 @@ namespace Markify.Textify
             if (_secondaryCarets.Count == 0 && _secondarySelections.Count == 0) return;
             _secondaryCarets.Clear();
             _secondarySelections.Clear();
+            _surface.InvalidateMeasure();
             _surface.InvalidateVisual();
             PublishSelectionState();
         }

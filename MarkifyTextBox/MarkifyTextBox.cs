@@ -23,6 +23,8 @@ namespace Markify.Textify
             nameof(FontSize), typeof(double), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(14d, OnVisualOptionChanged));
         public static readonly DependencyProperty EnableMarkdownHeadingsProperty = DependencyProperty.Register(
             nameof(EnableMarkdownHeadings), typeof(bool), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(true, OnVisualOptionChanged));
+        public static readonly DependencyProperty EnableMarkdownHorizontalRulesProperty = DependencyProperty.Register(
+            nameof(EnableMarkdownHorizontalRules), typeof(bool), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(true, OnVisualOptionChanged));
         public static readonly DependencyProperty ForegroundProperty = DependencyProperty.Register(
             nameof(Foreground), typeof(Brush), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(Brushes.DarkSlateGray, OnVisualOptionChanged));
         public static readonly DependencyProperty IsReadOnlyProperty = DependencyProperty.Register(
@@ -107,6 +109,7 @@ namespace Markify.Textify
         public FontFamily FontFamily { get { return (FontFamily)GetValue(FontFamilyProperty); } set { SetValue(FontFamilyProperty, value); } }
         public double FontSize { get { return (double)GetValue(FontSizeProperty); } set { SetValue(FontSizeProperty, value); } }
         public bool EnableMarkdownHeadings { get { return (bool)GetValue(EnableMarkdownHeadingsProperty); } set { SetValue(EnableMarkdownHeadingsProperty, value); } }
+        public bool EnableMarkdownHorizontalRules { get { return (bool)GetValue(EnableMarkdownHorizontalRulesProperty); } set { SetValue(EnableMarkdownHorizontalRulesProperty, value); } }
         public Brush Foreground { get { return (Brush)GetValue(ForegroundProperty); } set { SetValue(ForegroundProperty, value); } }
         public bool IsReadOnly { get { return (bool)GetValue(IsReadOnlyProperty); } set { SetValue(IsReadOnlyProperty, value); } }
         public bool IsWordWrapEnabled { get { return (bool)GetValue(IsWordWrapEnabledProperty); } set { SetValue(IsWordWrapEnabledProperty, value); } }
@@ -193,6 +196,35 @@ namespace Markify.Textify
             int afterMarkers = position + level;
             if (afterMarkers < value.Length && value[afterMarkers] != ' ' && value[afterMarkers] != '\t') return 0;
             return level;
+        }
+
+        internal bool IsMarkdownHorizontalRuleLine(int line)
+        {
+            if (!EnableMarkdownHorizontalRules || line < 0 || line >= _lineCache.Length) return false;
+            string value = _lineCache[line].TrimEnd('\r');
+            int position = 0;
+            while (position < value.Length && value[position] == ' ') position++;
+            if (position > 3) return false;
+
+            int hyphenCount = 0;
+            for (; position < value.Length; position++)
+            {
+                char character = value[position];
+                if (character == '-') hyphenCount++;
+                else if (character != ' ' && character != '\t') return false;
+            }
+            return hyphenCount >= 3;
+        }
+
+        internal bool MarkdownHorizontalRuleSourceIsVisible(int line)
+        {
+            if (!IsMarkdownHorizontalRuleLine(line)) return false;
+            int lineStart = GetLineStart(line);
+            int lineEnd = GetLineEndAtLine(line);
+            if (_caret >= lineStart && _caret <= lineEnd) return true;
+            foreach (int caret in AdditionalCaretPositions)
+                if (caret >= lineStart && caret <= lineEnd) return true;
+            return false;
         }
 
         internal int MarkdownHeadingPrefixLengthForLine(int line)
@@ -371,6 +403,13 @@ namespace Markify.Textify
         private void AddVisualRowsForLine(int line, List<int> visible, List<int> starts, List<int> lengths)
         {
             string value = _lineCache[line].TrimEnd('\r');
+            if (IsMarkdownHorizontalRuleLine(line))
+            {
+                visible.Add(line);
+                starts.Add(0);
+                lengths.Add(value.Length);
+                return;
+            }
             if (!IsWordWrapEnabled || double.IsInfinity(_wrapTextWidth) || value.Length == 0)
             {
                 visible.Add(line);
@@ -432,7 +471,8 @@ namespace Markify.Textify
         private static void OnVisualOptionChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
         {
             var editor = (MarkifyTextBox)d;
-            if (e.Property == FontFamilyProperty || e.Property == FontSizeProperty || e.Property == EnableMarkdownHeadingsProperty)
+            if (e.Property == FontFamilyProperty || e.Property == FontSizeProperty ||
+                e.Property == EnableMarkdownHeadingsProperty || e.Property == EnableMarkdownHorizontalRulesProperty)
             {
                 editor._textWidthCache.Clear();
                 editor.UpdateWrapWidth();

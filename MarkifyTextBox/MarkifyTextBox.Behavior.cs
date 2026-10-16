@@ -307,6 +307,7 @@ namespace Markify.Textify
                     return;
                 }
                 _caret = PositionFromPoint(point);
+                _surface.InvalidateMeasure();
                 _surface.InvalidateVisual();
                 PublishSelectionState();
             }
@@ -324,6 +325,13 @@ namespace Markify.Textify
             int segmentEnd = segmentStart + VisibleRowLength(row);
             int renderedStart = RenderedStartColumnForRow(row);
             int lineStart = GetLineStart(line) + renderedStart;
+            if (IsMarkdownHorizontalRuleLine(line) && !MarkdownHorizontalRuleSourceIsVisible(line))
+            {
+                int sourceLength = Math.Max(0, GetLineEndAtLine(line) - GetLineStart(line));
+                double ruleWidth = Math.Max(1, _surface.ActualWidth - TextOrigin * 2);
+                double relativePosition = Math.Max(0, Math.Min(1, (point.X - TextOrigin) / ruleWidth));
+                return GetLineStart(line) + (int)Math.Round(relativePosition * sourceLength);
+            }
             string visibleLine = Text.Substring(lineStart, Math.Min(Math.Max(0, segmentEnd - renderedStart), Math.Max(0, LineEnd(lineStart) - lineStart)));
             double targetX = Math.Max(0, point.X - TextOrigin);
             int low = 0, high = visibleLine.Length;
@@ -347,7 +355,7 @@ namespace Markify.Textify
 
         private void Changed()
         {
-            _caretVisible = true; _surface.InvalidateVisual(); EnsureCaretVisible(); PublishSelectionState();
+            _caretVisible = true; _surface.InvalidateMeasure(); _surface.InvalidateVisual(); EnsureCaretVisible(); PublishSelectionState();
         }
 
         private void EnsureCaretVisible()

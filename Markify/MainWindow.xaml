@@ -12,6 +12,7 @@
                             Margin="12"
                             Text=""
                             EnableMarkdownHeadings="True"
+                            EnableMarkdownHorizontalRules="True"
                             FontFamily="Consolas"
                             FontSize="14" />
     </Grid>
