@@ -1,0 +1,39 @@
+# Visual Studio workspace and user-specific settings
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.csproj.user
+
+# Build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa]rm/
+[Aa]rm64/
+[Bb]uild[Ll]og.*
+[Tt]est[Rr]esult*/
+artifacts/
+publish/
+
+# NuGet packages
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+
+# IDE and tool caches
+.idea/
+_ReSharper*/
+*.DotSettings.user
+*.cache
+
+# Debug symbols and temporary files
+*.pdb
+*.mdb
+*.tmp
+*.log
