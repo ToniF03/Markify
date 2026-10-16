@@ -335,7 +335,7 @@ namespace Markify.Textify
             int clampedSegmentEnd = Math.Min(segmentEnd, GetLineEndAtLine(line) - lineStart);
             RenderedTextSegment renderedSegment = CreateRenderedTextSegment(line, renderedStart, clampedSegmentEnd);
             string visibleLine = renderedSegment.Text;
-            double targetX = Math.Max(0, point.X - TextOrigin);
+            double targetX = Math.Max(0, point.X - TextOriginForLine(line));
             int low = 0, high = visibleLine.Length;
             while (low < high)
             {
@@ -371,7 +371,7 @@ namespace Markify.Textify
             int segmentEnd = Math.Min(VisibleRowStartColumn(visibleRow) + VisibleRowLength(visibleRow), lineEnd - lineStart);
             RenderedTextSegment renderedSegment = CreateRenderedTextSegment(line, renderedStart, segmentEnd);
             int displayColumn = RenderedBoundaryForSourceColumn(renderedSegment, _caret - lineStart);
-            double x = TextOrigin + MeasureRenderedTextWidthForLine(renderedSegment, line, displayColumn);
+            double x = TextOriginForLine(line) + MeasureRenderedTextWidthForLine(renderedSegment, line, displayColumn);
             double y = TopInset + VisibleRowTop(visibleRow);
             double rowHeight = LineHeightForVisibleRow(visibleRow);
             if (x < _scroll.HorizontalOffset) _scroll.ScrollToHorizontalOffset(x);

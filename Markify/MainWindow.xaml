@@ -15,6 +15,7 @@
                             EnableMarkdownBold="True"
                             EnableMarkdownInlineCode="True"
                             EnableMarkdownCodeBlocks="True"
+                            EnableMarkdownLists="True"
                             EnableMarkdownHorizontalRules="True"
                             IsHorizontalScrollEnabled="True"
                             FontFamily="Consolas"
