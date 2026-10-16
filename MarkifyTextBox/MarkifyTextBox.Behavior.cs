@@ -128,6 +128,7 @@ namespace Markify.Textify
             { DeleteAtMultipleCarets(true); return; }
             if (SelectionLength > 0) { ReplaceSelection(string.Empty); return; }
             if (_caret == 0) return;
+            if (IsMarkdownTablePipe(_caret - 1)) return;
             if (_caret > 1 && Text[_caret - 1] == '\n' && Text[_caret - 2] == '\r') _caret--;
             _selectionAnchor = _caret - 1; ReplaceSelection(string.Empty);
         }
@@ -138,6 +139,7 @@ namespace Markify.Textify
             { DeleteAtMultipleCarets(false); return; }
             if (SelectionLength > 0) { ReplaceSelection(string.Empty); return; }
             if (_caret >= Text.Length) return;
+            if (IsMarkdownTablePipe(_caret)) return;
             _selectionAnchor = _caret + 1; ReplaceSelection(string.Empty);
         }
 
@@ -151,6 +153,12 @@ namespace Markify.Textify
                 if (!extend) _selectionAnchor = _caret;
             }
             if (!extend && SelectionLength > 0) { MoveTo(direction < 0 ? SelectionStart : SelectionStart + SelectionLength, false); return; }
+            int tableDestination;
+            if (!byWord && TryGetMarkdownTableHorizontalDestination(_caret, direction, out tableDestination))
+            {
+                MoveTo(tableDestination, extend);
+                return;
+            }
             int target = _caret + direction;
             if (byWord && target >= 0 && target <= Text.Length)
             {
@@ -172,6 +180,36 @@ namespace Markify.Textify
 
             int targetRow = Math.Max(0, Math.Min(VisibleLineCount - 1, currentRow + delta));
             int targetLine = DocumentLineAtVisibleRow(targetRow);
+            MarkdownTableLayout targetTable;
+            while (targetRow != currentRow && TryGetMarkdownTableLayout(targetLine, out targetTable) &&
+                targetTable.IsSeparator)
+            {
+                int nextRow = Math.Max(0, Math.Min(VisibleLineCount - 1, targetRow + (delta < 0 ? -1 : 1)));
+                if (nextRow == targetRow) break;
+                targetRow = nextRow;
+                targetLine = DocumentLineAtVisibleRow(targetRow);
+            }
+
+            MarkdownTableLayout currentTable;
+            if (TryGetMarkdownTableLayout(currentLine, out currentTable) && !currentTable.IsSeparator &&
+                TryGetMarkdownTableLayout(targetLine, out targetTable) && !targetTable.IsSeparator)
+            {
+                int currentColumn = _caret - GetLineStart(currentLine);
+                for (int column = 0; column < currentTable.Cells.Length; column++)
+                {
+                    MarkdownTableCell currentCell = currentTable.Cells[column];
+                    if (currentColumn < currentCell.Start || currentColumn > currentCell.Start + currentCell.Length)
+                        continue;
+                    RenderedTextSegment currentSegment = MarkdownTableCellSegment(currentLine, currentTable, column);
+                    int displayColumn = RenderedBoundaryForSourceColumn(currentSegment, currentColumn);
+                    int tableTargetColumn = Math.Min(column, targetTable.Cells.Length - 1);
+                    RenderedTextSegment targetSegment = MarkdownTableCellSegment(targetLine, targetTable, tableTargetColumn);
+                    int targetDisplayColumn = Math.Min(displayColumn, targetSegment.Text.Length);
+                    MoveTo(GetLineStart(targetLine) + targetSegment.SourceBoundaries[targetDisplayColumn], extend,
+                        preservePreferredColumn: true);
+                    return;
+                }
+            }
             int targetLineStart = GetLineStart(targetLine);
             int targetSegmentStart = Math.Max(VisibleRowStartColumn(targetRow), RenderedStartColumnForRow(targetRow));
             int targetSegmentLength = VisibleRowLength(targetRow);
@@ -186,7 +224,10 @@ namespace Markify.Textify
             _secondarySelections.Clear();
             _isRectangularSelection = false;
             int bounded = Math.Max(0, Math.Min(Text.Length, position));
-            _caret = bounded;
+            int normalized = NormalizeMarkdownTableCaretPosition(bounded, _caret);
+            if (extend)
+                normalized = ClampMarkdownTablePositionToCell(_selectionAnchor, normalized);
+            _caret = normalized;
             if (!extend)
                 _selectionAnchor = _caret;
             if (!preservePreferredColumn) _preferredColumn = -1;
@@ -290,6 +331,8 @@ namespace Markify.Textify
             _secondarySelections.Clear();
             _preferredColumn = -1;
             _caret = PositionFromPoint(point);
+            if (extendSelection)
+                _caret = ClampMarkdownTablePositionToCell(_selectionAnchor, _caret);
             if (!extendSelection)
                 _selectionAnchor = _caret;
             _surface.CaptureMouse(); Changed(); e.Handled = true;
@@ -304,11 +347,14 @@ namespace Markify.Textify
                 if (_isRectangularSelection)
                 {
                     UpdateRectangleFromPosition(PositionFromPoint(point));
+                    RefreshMarkdownTableSourceVisibility();
                     return;
                 }
-                _caret = PositionFromPoint(point);
+                _caret = ClampMarkdownTablePositionToCell(_selectionAnchor, PositionFromPoint(point));
+                RefreshMarkdownTableSourceVisibility();
                 _surface.InvalidateMeasure();
                 _surface.InvalidateVisual();
+                UpdateMarkdownVideoPlayerLayout();
                 PublishSelectionState();
             }
             else
@@ -332,6 +378,9 @@ namespace Markify.Textify
                 double relativePosition = Math.Max(0, Math.Min(1, (point.X - TextOrigin) / ruleWidth));
                 return lineStart + (int)Math.Round(relativePosition * sourceLength);
             }
+            MarkdownTableLayout tableLayout;
+            if (TryGetMarkdownTableLayout(line, out tableLayout) && !tableLayout.IsSourceVisible)
+                return PositionFromMarkdownTablePoint(line, point.X, tableLayout);
             int clampedSegmentEnd = Math.Min(segmentEnd, GetLineEndAtLine(line) - lineStart);
             RenderedTextSegment renderedSegment = CreateRenderedTextSegment(line, renderedStart, clampedSegmentEnd);
             string visibleLine = renderedSegment.Text;
@@ -357,7 +406,9 @@ namespace Markify.Textify
 
         private void Changed()
         {
-            _caretVisible = true; _surface.InvalidateMeasure(); _surface.InvalidateVisual(); EnsureCaretVisible(); PublishSelectionState();
+            _caretVisible = true; _surface.InvalidateMeasure(); _surface.InvalidateVisual();
+            RefreshMarkdownTableSourceVisibility();
+            UpdateMarkdownVideoPlayerLayout(); EnsureCaretVisible(); PublishSelectionState();
         }
 
         private void EnsureCaretVisible()

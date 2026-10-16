@@ -13,6 +13,8 @@ namespace Markify.Textify
             private static readonly Brush SelectionBackground = FrozenBrush(Color.FromRgb(194, 220, 247));
             private static readonly Brush BracketBackground = FrozenBrush(Color.FromRgb(255, 217, 128));
             private static readonly Brush CaretForeground = FrozenBrush(Color.FromRgb(45, 111, 176));
+            private static readonly Brush MarkdownTableBorder = FrozenBrush(Color.FromRgb(190, 198, 207));
+            private static readonly Brush MarkdownTableHeader = FrozenBrush(Color.FromRgb(239, 243, 248));
             private readonly MarkifyTextBox _editor;
             public EditorSurface(MarkifyTextBox editor)
             {
@@ -46,9 +48,21 @@ namespace Markify.Textify
                             containsHorizontalRule = true;
                             if (!_editor.MarkdownHorizontalRuleSourceIsVisible(lineIndex)) continue;
                         }
+                        MarkifyTextBox.MarkdownTableLayout tableLayout;
+                        if (_editor.TryGetMarkdownTableLayout(lineIndex, out tableLayout) &&
+                            !tableLayout.IsSourceVisible)
+                        {
+                            maxWidth = Math.Max(maxWidth, _editor.TextOriginForLine(lineIndex) +
+                                _editor.MarkdownTableWidth(tableLayout));
+                            continue;
+                        }
                         maxWidth = Math.Max(maxWidth,
                             _editor.MeasureTextWidthForLine(lines[lineIndex].TrimEnd('\r'), lineIndex) +
                             _editor.MarkdownListIndentForLine(lineIndex));
+                        MarkifyTextBox.MarkdownMediaBlock mediaBlock;
+                        if (_editor.TryGetMarkdownMediaBlockForLine(lineIndex, out mediaBlock))
+                            maxWidth = Math.Max(maxWidth, _editor.TextOriginForLine(lineIndex) +
+                                (mediaBlock.IsVideo ? 480 : 480));
                     }
                 }
                 double width = _editor.IsWordWrapEnabled
@@ -95,6 +109,13 @@ namespace Markify.Textify
                         dc.DrawRectangle(_editor.CurrentLineBackground, null, new Rect(0, y, ActualWidth, rowHeight));
                     if (_editor.IsWholeLineSelected(documentLine))
                         dc.DrawRectangle(SelectionBackground, null, new Rect(0, y, ActualWidth, rowHeight));
+                    MarkifyTextBox.MarkdownTableLayout tableLayout;
+                    if (_editor.TryGetMarkdownTableLayout(documentLine, out tableLayout) &&
+                        !tableLayout.IsSourceVisible)
+                    {
+                        DrawMarkdownTableRow(dc, documentLine, tableLayout, row, textOrigin, y, rowHeight, dpi);
+                        continue;
+                    }
                     if (_editor.IsMarkdownCodeFenceLine(documentLine))
                         dc.DrawRectangle(MarkifyTextBox.MarkdownInlineCodeBackground, null,
                             new Rect(Math.Max(0, _editor.TextOrigin - 4), y,
@@ -114,6 +135,39 @@ namespace Markify.Textify
                         var rulePen = new Pen(ruleBrush, 0.65);
                         if (rulePen.CanFreeze) rulePen.Freeze();
                         dc.DrawLine(rulePen, new Point(textOrigin, ruleY), new Point(ruleEnd, ruleY));
+                        continue;
+                    }
+                    MarkifyTextBox.MarkdownMediaBlock mediaBlock;
+                    if (_editor.TryGetMarkdownMediaBlockForLine(documentLine, out mediaBlock) &&
+                        !_editor.MarkdownMediaSourceIsVisible(documentLine, mediaBlock))
+                    {
+                        if (!mediaBlock.IsVideo)
+                        {
+                            ImageSource image = _editor.GetMarkdownImageSource(mediaBlock.Source);
+                            double imageWidth = 0;
+                            double imageHeight = 0;
+                            if (image != null && image.Width > 0 && image.Height > 0)
+                            {
+                                double scale = Math.Min(1, Math.Min(480 / image.Width, 260 / image.Height));
+                                imageWidth = image.Width * scale;
+                                imageHeight = image.Height * scale;
+                            }
+                            if (imageWidth > 0 && imageHeight > 0)
+                            {
+                                dc.DrawImage(image, new Rect(textOrigin, y + 3, imageWidth, imageHeight));
+                            }
+                            else
+                            {
+                                var placeholder = new Rect(textOrigin, y + 3, 260, 42);
+                                dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(242, 244, 247)),
+                                    new Pen(new SolidColorBrush(Color.FromRgb(205, 211, 218)), 1), placeholder, 4, 4);
+                                string label = string.IsNullOrWhiteSpace(mediaBlock.AltText)
+                                    ? "Bild konnte nicht geladen werden" : mediaBlock.AltText;
+                                var placeholderText = MakeText(label, new Typeface(_editor.FontFamily, FontStyles.Normal,
+                                    FontWeights.Normal, FontStretches.Normal), _editor.Foreground, dpi, _editor.FontSize);
+                                dc.DrawText(placeholderText, new Point(textOrigin + 10, y + 13));
+                            }
+                        }
                         continue;
                     }
                     Brush lineBrush = _editor.Foreground;
@@ -163,10 +217,13 @@ namespace Markify.Textify
                                 _editor.ApplySyntaxHighlighting(formatted, line, documentLine);
                             _editor.ApplyMarkdownBold(formatted, documentLine, renderedSegment.SourceColumns);
                             _editor.ApplyMarkdownItalic(formatted, documentLine, renderedSegment.SourceColumns);
+                            _editor.ApplyMarkdownStrikethrough(formatted, documentLine, renderedSegment.SourceColumns);
                             _editor.ApplyMarkdownScriptStyle(formatted, documentLine, renderedSegment.SourceColumns);
                             _editor.ApplyMarkdownInlineCode(formatted, documentLine, renderedSegment.SourceColumns);
                             _editor.ApplyMarkdownCodeFenceStyle(formatted, documentLine, line.Length);
                             _editor.ApplyMarkdownFenceSyntaxHighlighting(formatted, documentLine, renderedSegment.SourceColumns);
+                            _editor.ApplyMarkdownTaskMarkerStyle(formatted, documentLine, renderedSegment.SourceColumns);
+                            _editor.ApplyMarkdownLinkStyle(formatted, documentLine, renderedSegment.SourceColumns);
                             _editor.ApplyMarkdownListMarkerStyle(formatted, documentLine, renderedSegment.SourceColumns);
                             dc.DrawText(formatted, new Point(textOrigin, y + Math.Max(0, (rowHeight - formatted.Height) / 2)));
                         }
@@ -194,10 +251,13 @@ namespace Markify.Textify
                                     _editor.ApplySyntaxHighlighting(formatted, line, documentLine, displayStart, runLength);
                                 _editor.ApplyMarkdownBold(formatted, documentLine, runSourceColumns);
                                 _editor.ApplyMarkdownItalic(formatted, documentLine, runSourceColumns);
+                                _editor.ApplyMarkdownStrikethrough(formatted, documentLine, runSourceColumns);
                                 _editor.ApplyMarkdownScriptStyle(formatted, documentLine, runSourceColumns);
                                 _editor.ApplyMarkdownInlineCode(formatted, documentLine, runSourceColumns);
                                 _editor.ApplyMarkdownCodeFenceStyle(formatted, documentLine, runLength);
                                 _editor.ApplyMarkdownFenceSyntaxHighlighting(formatted, documentLine, runSourceColumns);
+                                _editor.ApplyMarkdownTaskMarkerStyle(formatted, documentLine, runSourceColumns);
+                                _editor.ApplyMarkdownLinkStyle(formatted, documentLine, runSourceColumns);
                                 _editor.ApplyMarkdownListMarkerStyle(formatted, documentLine, runSourceColumns);
 
                                 double x = textOrigin +
@@ -258,6 +318,104 @@ namespace Markify.Textify
                         var background = new Rect(startX - 2, y + 2, endX - startX + 4, Math.Max(0, rowHeight - 4));
                         dc.DrawRoundedRectangle(MarkifyTextBox.MarkdownInlineCodeBackground, null, background, 2, 2);
                     }
+                }
+            }
+
+            private void DrawMarkdownTableRow(DrawingContext dc, int line,
+                MarkifyTextBox.MarkdownTableLayout layout, int visualRow, double textOrigin, double y,
+                double rowHeight, double dpi)
+            {
+                double tableWidth = _editor.MarkdownTableWidth(layout);
+                var borderPen = new Pen(MarkdownTableBorder, 0.8);
+                if (layout.IsSeparator)
+                {
+                    double ruleY = y + rowHeight / 2;
+                    dc.DrawLine(borderPen, new Point(textOrigin, ruleY), new Point(textOrigin + tableWidth, ruleY));
+                    return;
+                }
+
+                double x = textOrigin;
+                for (int column = 0; column < layout.Cells.Length; column++)
+                {
+                    double columnWidth = layout.PixelColumnWidths[column];
+                    var cellRect = new Rect(x, y, columnWidth, rowHeight);
+                    Brush cellBackground = layout.IsHeader ? MarkdownTableHeader :
+                        (_editor.HighlightCurrentLine && _editor.LineIndexAt(_editor.Caret) == line
+                            ? _editor.CurrentLineBackground : _editor.Background);
+                    dc.DrawRectangle(cellBackground, borderPen, cellRect);
+
+                    MarkifyTextBox.MarkdownTableCell cell = layout.Cells[column];
+                    MarkifyTextBox.RenderedTextSegment segment =
+                        _editor.CreateRenderedTextSegment(line, cell.Start, cell.Start + cell.Length);
+                    double contentX = _editor.MarkdownTableCellTextOrigin(line, layout, column, segment);
+                    int lineStart = _editor.GetLineStart(line);
+                    foreach (MarkifyTextBox.SelectionSpan span in _editor.GetSelectionSpansForLine(line))
+                    {
+                        int index = 0;
+                        while (index < segment.SourceColumns.Length)
+                        {
+                            while (index < segment.SourceColumns.Length &&
+                                (lineStart + segment.SourceColumns[index] < span.Start ||
+                                 lineStart + segment.SourceColumns[index] >= span.Start + span.Length)) index++;
+                            int selectionStart = index;
+                            while (index < segment.SourceColumns.Length &&
+                                lineStart + segment.SourceColumns[index] >= span.Start &&
+                                lineStart + segment.SourceColumns[index] < span.Start + span.Length) index++;
+                            if (index <= selectionStart) continue;
+                            double startX = contentX + _editor.MarkdownTableTextWidth(
+                                segment, line, selectionStart, layout.IsHeader);
+                            double endX = contentX + _editor.MarkdownTableTextWidth(
+                                segment, line, index, layout.IsHeader);
+                            dc.DrawRectangle(SelectionBackground, null,
+                                new Rect(startX, y, Math.Max(0, endX - startX), rowHeight));
+                        }
+                    }
+                    if (segment.Text.Length > 0)
+                    {
+                        double fontSize = _editor.FontSizeForLine(line);
+                        var typeface = new Typeface(_editor.FontFamily, FontStyles.Normal,
+                            layout.IsHeader ? FontWeights.Bold : FontWeights.Normal, FontStretches.Normal);
+                        FormattedText formatted = MakeText(segment.Text, typeface, _editor.Foreground, dpi, fontSize);
+                        if (_editor.EnableSyntaxHighlighting)
+                            _editor.ApplySyntaxHighlighting(formatted, segment.Text, line);
+                        _editor.ApplyMarkdownBold(formatted, line, segment.SourceColumns);
+                        _editor.ApplyMarkdownItalic(formatted, line, segment.SourceColumns);
+                        _editor.ApplyMarkdownStrikethrough(formatted, line, segment.SourceColumns);
+                        _editor.ApplyMarkdownScriptStyle(formatted, line, segment.SourceColumns);
+                        _editor.ApplyMarkdownInlineCode(formatted, line, segment.SourceColumns);
+                        _editor.ApplyMarkdownTaskMarkerStyle(formatted, line, segment.SourceColumns);
+                        _editor.ApplyMarkdownLinkStyle(formatted, line, segment.SourceColumns);
+                        _editor.ApplyMarkdownListMarkerStyle(formatted, line, segment.SourceColumns);
+
+                        double contentY = y + Math.Max(0, (rowHeight - formatted.Height) / 2);
+                        dc.DrawText(formatted, new Point(contentX, contentY));
+                    }
+
+                    int caretColumn = _editor.Caret - lineStart;
+                    if (_editor.HasFocus && _editor.CaretVisible && _editor.SelectionLength == 0 &&
+                        _editor.VisibleRowForPosition(_editor.Caret) == visualRow &&
+                        _editor.LineIndexAt(_editor.Caret) == line &&
+                        caretColumn >= cell.Start && caretColumn <= cell.Start + cell.Length)
+                    {
+                        int displayColumn = _editor.RenderedBoundaryForSourceColumn(segment, caretColumn);
+                        double caretX = contentX + _editor.MarkdownTableTextWidth(
+                            segment, line, displayColumn, layout.IsHeader);
+                        dc.DrawRectangle(CaretForeground, null,
+                            new Rect(caretX, y + 1, 1.4, Math.Max(0, rowHeight - 2)));
+                    }
+                    foreach (int secondaryCaret in _editor.AdditionalCaretPositions)
+                    {
+                        if (!_editor.HasFocus || _editor.VisibleRowForPosition(secondaryCaret) != visualRow ||
+                            _editor.LineIndexAt(secondaryCaret) != line) continue;
+                        int secondaryColumn = secondaryCaret - lineStart;
+                        if (secondaryColumn < cell.Start || secondaryColumn > cell.Start + cell.Length) continue;
+                        int displayColumn = _editor.RenderedBoundaryForSourceColumn(segment, secondaryColumn);
+                        double secondaryX = contentX + _editor.MarkdownTableTextWidth(
+                            segment, line, displayColumn, layout.IsHeader);
+                        dc.DrawRectangle(CaretForeground, null,
+                            new Rect(secondaryX, y + 2, 1.2, Math.Max(0, rowHeight - 4)));
+                    }
+                    x += columnWidth;
                 }
             }
 

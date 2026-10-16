@@ -44,6 +44,7 @@
     <Compile Include="MarkifyTextBox.Advanced.cs" />
     <Compile Include="MarkifyTextBox.Behavior.cs" />
     <Compile Include="MarkifyTextBox.cs" />
+    <Compile Include="MarkifyTextBox.MarkdownRendering.cs" />
     <Compile Include="MarkifyTextBox.Rendering.cs" />
     <Compile Include="SyntaxDefinition.cs" />
     <Compile Include="SyntaxHighlightRule.cs" />

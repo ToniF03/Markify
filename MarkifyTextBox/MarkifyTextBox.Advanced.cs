@@ -153,6 +153,7 @@ namespace Markify.Textify
             _isRectangularSelection = false;
             _secondaryCarets.Add(position);
             _secondaryCarets.Sort();
+            RefreshMarkdownTableSourceVisibility();
             _surface.InvalidateMeasure();
             _surface.InvalidateVisual();
             PublishSelectionState();
@@ -163,6 +164,7 @@ namespace Markify.Textify
             if (_secondaryCarets.Count == 0 && _secondarySelections.Count == 0) return;
             _secondaryCarets.Clear();
             _secondarySelections.Clear();
+            RefreshMarkdownTableSourceVisibility();
             _surface.InvalidateMeasure();
             _surface.InvalidateVisual();
             PublishSelectionState();
@@ -271,6 +273,7 @@ namespace Markify.Textify
             if (index < 0 || index == SelectionStart) return false;
             if (!_secondarySelections.Any(span => span.Start == index && span.Length == needle.Length))
                 _secondarySelections.Add(new SelectionSpan(index, needle.Length));
+            RefreshMarkdownTableSourceVisibility();
             _surface.InvalidateVisual();
             PublishSelectionState();
             return true;

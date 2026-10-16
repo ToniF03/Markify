@@ -149,8 +149,12 @@ namespace Markify.Textify
         private readonly List<int> _secondaryCarets = new List<int>();
         private readonly List<SelectionSpan> _secondarySelections = new List<SelectionSpan>();
         private string[] _lineCache = new[] { string.Empty };
+        private MarkdownListMarker[] _markdownListMarkersByLine = new MarkdownListMarker[1];
+        private bool[] _markdownListMarkersParsed = new bool[1];
         private List<MarkdownCodeFenceBlock> _markdownCodeFenceBlocks = new List<MarkdownCodeFenceBlock>();
         private int[] _markdownCodeFenceByLine = new[] { -1 };
+        private readonly Dictionary<int, MarkdownTableLayout> _markdownTableLayouts =
+            new Dictionary<int, MarkdownTableLayout>();
         private int[] _visibleLines = new[] { 0 };
         private int[] _documentToVisibleRow = new[] { 0 };
         private int[] _visibleRowStartColumns = new[] { 0 };
@@ -184,6 +188,9 @@ namespace Markify.Textify
         private static readonly Brush MarkdownInlineCodeBackground = CreateFrozenBrush(Color.FromRgb(238, 240, 243));
         private static readonly Brush MarkdownInlineCodeForeground = CreateFrozenBrush(Color.FromRgb(91, 49, 47));
         private static readonly Brush MarkdownListMarkerForeground = CreateFrozenBrush(Color.FromRgb(76, 98, 122));
+        private static readonly Brush MarkdownLinkForeground = CreateFrozenBrush(Color.FromRgb(0, 102, 204));
+        private static readonly Brush MarkdownTaskForeground = CreateFrozenBrush(Color.FromRgb(54, 115, 78));
+        private static readonly Brush MarkdownTaskUncheckedForeground = CreateFrozenBrush(Color.FromRgb(92, 105, 119));
         private static readonly SyntaxDefinition MarkdownSyntaxDefinition =
             SyntaxDefinition.LoadFromResource("Markify.Textify.Syntaxes.markdown.syntax.xml");
 
@@ -245,10 +252,14 @@ namespace Markify.Textify
             };
             Grid.SetRowSpan(_border, RowDefinitions.Count);
             _surface = new EditorSurface(this);
-            _scroll = new ScrollViewer { Content = _surface, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            _markdownMediaCanvas = new Canvas { IsHitTestVisible = true };
+            var content = new Grid();
+            content.Children.Add(_surface);
+            content.Children.Add(_markdownMediaCanvas);
+            _scroll = new ScrollViewer { Content = content, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto, CanContentScroll = false,
                 Background = Background, Focusable = false };
-            _scroll.ScrollChanged += (s, e) => _surface.InvalidateVisual();
+            _scroll.ScrollChanged += (s, e) => { _surface.InvalidateVisual(); UpdateMarkdownVideoPlayerLayout(); };
             _scroll.SizeChanged += OnEditorViewportSizeChanged;
             Grid.SetRow(_scroll, 1);
             Children.Add(_scroll);
@@ -260,6 +271,7 @@ namespace Markify.Textify
             PreviewKeyDown += HandleKeyDown;
             TextInput += HandleTextInput;
             Loaded += AttachHorizontalWheelHook;
+            Loaded += (s, e) => UpdateMarkdownVideoPlayerLayout();
             Unloaded += DetachHorizontalWheelHook;
             GotKeyboardFocus += (s, e) => { _caretVisible = true; _surface.InvalidateVisual(); };
             LostKeyboardFocus += (s, e) => { _surface.InvalidateVisual(); };
@@ -321,10 +333,66 @@ namespace Markify.Textify
             if (!EnableMarkdownLists || IsMarkdownCodeFenceLine(line) || line < 0 || line >= _lineCache.Length)
                 return false;
 
-            string value = _lineCache[line].TrimEnd('\r');
-            int markerStart = 0;
-            while (markerStart < value.Length && value[markerStart] == ' ') markerStart++;
-            if (markerStart > 3 || markerStart >= value.Length) return false;
+            if (!_markdownListMarkersParsed[line])
+            {
+                _markdownListMarkersParsed[line] = true;
+                string lineValue = _lineCache[line].TrimEnd('\r');
+                MarkdownListMarker parsedMarker;
+                if (TryParseMarkdownListMarker(lineValue, out parsedMarker) &&
+                    (GetMarkdownIndentWidth(lineValue, parsedMarker.MarkerStart) <= 3 ||
+                     HasMarkdownListParent(line, parsedMarker)))
+                    _markdownListMarkersByLine[line] = parsedMarker;
+            }
+
+            marker = _markdownListMarkersByLine[line];
+            return marker.MarkerEnd > marker.MarkerStart;
+        }
+
+        private bool HasMarkdownListParent(int line, MarkdownListMarker marker)
+        {
+            string currentValue = _lineCache[line].TrimEnd('\r');
+            int currentIndent = GetMarkdownIndentWidth(currentValue, marker.MarkerStart);
+            for (int previousLine = line - 1; previousLine >= 0; previousLine--)
+            {
+                if (IsMarkdownCodeFenceLine(previousLine)) break;
+
+                string previousValue = _lineCache[previousLine].TrimEnd('\r');
+                if (string.IsNullOrWhiteSpace(previousValue)) continue;
+
+                MarkdownListMarker parentMarker;
+                if (TryGetMarkdownListMarkerForLine(previousLine, out parentMarker))
+                {
+                    int parentIndent = GetMarkdownIndentWidth(previousValue, parentMarker.MarkerStart);
+                    if (parentIndent < currentIndent &&
+                        currentIndent >= parentIndent + 2 &&
+                        LinesAreIndentedWithinMarkdownList(previousLine + 1, line - 1, parentIndent + 2))
+                        return true;
+                }
+                else if (GetMarkdownIndentWidth(previousValue, LeadingWhitespaceLength(previousValue)) == 0)
+                {
+                    break;
+                }
+            }
+            return false;
+        }
+
+        private bool LinesAreIndentedWithinMarkdownList(int firstLine, int lastLine, int minimumIndent)
+        {
+            for (int line = firstLine; line <= lastLine; line++)
+            {
+                if (IsMarkdownCodeFenceLine(line)) return false;
+                string value = _lineCache[line].TrimEnd('\r');
+                if (string.IsNullOrWhiteSpace(value)) continue;
+                if (GetMarkdownIndentWidth(value, LeadingWhitespaceLength(value)) < minimumIndent) return false;
+            }
+            return true;
+        }
+
+        private static bool TryParseMarkdownListMarker(string value, out MarkdownListMarker marker)
+        {
+            marker = default(MarkdownListMarker);
+            int markerStart = LeadingWhitespaceLength(value);
+            if (markerStart >= value.Length) return false;
 
             bool isOrdered = false;
             int markerEnd;
@@ -335,12 +403,11 @@ namespace Markify.Textify
             }
             else if (first >= '0' && first <= '9')
             {
-                int digitCount = 0;
-                while (markerStart + digitCount < value.Length &&
-                    value[markerStart + digitCount] >= '0' && value[markerStart + digitCount] <= '9') digitCount++;
-                if (digitCount > 9 || markerStart + digitCount >= value.Length ||
-                    (value[markerStart + digitCount] != '.' && value[markerStart + digitCount] != ')')) return false;
-                markerEnd = markerStart + digitCount + 1;
+                int digitsEnd = markerStart;
+                while (digitsEnd < value.Length && value[digitsEnd] >= '0' && value[digitsEnd] <= '9') digitsEnd++;
+                if (digitsEnd == markerStart || digitsEnd >= value.Length ||
+                    (value[digitsEnd] != '.' && value[digitsEnd] != ')')) return false;
+                markerEnd = digitsEnd + 1;
                 isOrdered = true;
             }
             else
@@ -353,6 +420,25 @@ namespace Markify.Textify
             while (contentStart < value.Length && (value[contentStart] == ' ' || value[contentStart] == '\t')) contentStart++;
             marker = new MarkdownListMarker(markerStart, markerEnd, contentStart, isOrdered);
             return true;
+        }
+
+        private static int LeadingWhitespaceLength(string value)
+        {
+            int length = 0;
+            while (length < value.Length && (value[length] == ' ' || value[length] == '\t')) length++;
+            return length;
+        }
+
+        private static int GetMarkdownIndentWidth(string value, int endColumn)
+        {
+            int width = 0;
+            int end = Math.Max(0, Math.Min(value.Length, endColumn));
+            for (int column = 0; column < end; column++)
+            {
+                if (value[column] == '\t') width += 4 - (width % 4);
+                else if (value[column] == ' ') width++;
+            }
+            return width;
         }
 
         internal double MarkdownListIndentForLine(int line)
@@ -579,6 +665,48 @@ namespace Markify.Textify
             return spans;
         }
 
+        internal List<SelectionSpan> GetMarkdownStrikethroughContentSpansForLine(int line)
+        {
+            var spans = new List<SelectionSpan>();
+            if (IsMarkdownCodeFenceLine(line) || line < 0 || line >= _lineCache.Length) return spans;
+
+            string value = _lineCache[line].TrimEnd('\r');
+            int searchFrom = 0;
+            while (searchFrom < value.Length)
+            {
+                int opening = value.IndexOf("~~", searchFrom, StringComparison.Ordinal);
+                if (opening < 0) break;
+                if (MarkdownEmphasisDelimiterRunLength(value, opening, '~') != 2 ||
+                    IsMarkdownEscaped(value, opening) || IsMarkdownInlineCodeContentColumn(line, opening))
+                {
+                    searchFrom = opening + MarkdownEmphasisDelimiterRunLength(value, opening, '~');
+                    continue;
+                }
+
+                int closing = opening + 2;
+                bool foundClosing = false;
+                while (closing < value.Length)
+                {
+                    int candidate = value.IndexOf("~~", closing, StringComparison.Ordinal);
+                    if (candidate < 0) break;
+                    int runLength = MarkdownEmphasisDelimiterRunLength(value, candidate, '~');
+                    if (runLength == 2 && candidate > opening + 2 &&
+                        !char.IsWhiteSpace(value[opening + 2]) && !char.IsWhiteSpace(value[candidate - 1]) &&
+                        !IsMarkdownEscaped(value, candidate) && !IsMarkdownInlineCodeContentColumn(line, candidate))
+                    {
+                        spans.Add(new SelectionSpan(opening + 2, candidate - opening - 2));
+                        searchFrom = candidate + 2;
+                        foundClosing = true;
+                        break;
+                    }
+                    closing = candidate + Math.Max(1, runLength);
+                }
+
+                if (!foundClosing) searchFrom = opening + 2;
+            }
+            return spans;
+        }
+
         internal List<MarkdownScriptSpan> GetMarkdownScriptSpansForLine(int line)
         {
             var spans = new List<MarkdownScriptSpan>();
@@ -744,6 +872,19 @@ namespace Markify.Textify
             return false;
         }
 
+        internal bool MarkdownStrikethroughMarkersAreVisible(int line, SelectionSpan contentSpan)
+        {
+            int lineStart = GetLineStart(line);
+            int pairStart = lineStart + contentSpan.Start - 2;
+            int pairEnd = lineStart + contentSpan.Start + contentSpan.Length + 2;
+            if (_caret >= pairStart && _caret <= pairEnd) return true;
+            foreach (int caret in AdditionalCaretPositions)
+                if (caret >= pairStart && caret <= pairEnd) return true;
+            foreach (SelectionSpan selection in GetSelectionSpansForLine(line))
+                if (selection.Start < pairEnd && selection.Start + selection.Length > pairStart) return true;
+            return false;
+        }
+
         internal bool MarkdownScriptMarkersAreVisible(int line, MarkdownScriptSpan span)
         {
             int lineStart = GetLineStart(line);
@@ -766,6 +907,22 @@ namespace Markify.Textify
             MarkdownListMarker listMarker;
             bool hasListMarker = TryGetMarkdownListMarkerForLine(line, out listMarker);
             bool listMarkersVisible = hasListMarker && MarkdownListMarkerIsVisible(line, listMarker);
+            MarkdownTaskMarker taskMarker;
+            bool hasTaskMarker = TryGetMarkdownTaskMarkerForLine(line, out taskMarker);
+            bool taskMarkersVisible = hasTaskMarker && MarkdownTaskMarkerIsVisible(line, taskMarker);
+            MarkdownMediaBlock mediaBlock;
+            bool hasMediaBlock = TryGetMarkdownMediaBlockForLine(line, out mediaBlock);
+            bool showMediaPreview = hasMediaBlock && !MarkdownMediaSourceIsVisible(line, mediaBlock);
+            if (showMediaPreview)
+                for (int i = 0; i < hiddenMarkers.Length; i++) hiddenMarkers[i] = true;
+            foreach (MarkdownLinkSpan span in GetMarkdownLinksForLine(line))
+            {
+                if (MarkdownLinkMarkersAreVisible(line, span)) continue;
+                if (span.Start >= 0 && span.Start < hiddenMarkers.Length) hiddenMarkers[span.Start] = true;
+                int labelEnd = span.LabelStart + span.LabelLength;
+                for (int i = labelEnd; i < span.End && i < hiddenMarkers.Length; i++)
+                    if (i >= 0) hiddenMarkers[i] = true;
+            }
             if (IsMarkdownCodeFenceDelimiterLine(line) && !MarkdownCodeFenceMarkersAreVisible(line))
             {
                 for (int i = 0; i < hiddenMarkers.Length; i++) hiddenMarkers[i] = true;
@@ -798,6 +955,16 @@ namespace Markify.Textify
                 if (opening >= 0 && opening < hiddenMarkers.Length) hiddenMarkers[opening] = true;
                 if (closing >= 0 && closing < hiddenMarkers.Length) hiddenMarkers[closing] = true;
             }
+            foreach (SelectionSpan span in GetMarkdownStrikethroughContentSpansForLine(line))
+            {
+                if (MarkdownStrikethroughMarkersAreVisible(line, span)) continue;
+                int opening = span.Start - 2;
+                int closing = span.Start + span.Length;
+                for (int i = opening; i < opening + 2 && i < hiddenMarkers.Length; i++)
+                    if (i >= 0) hiddenMarkers[i] = true;
+                for (int i = closing; i < closing + 2 && i < hiddenMarkers.Length; i++)
+                    if (i >= 0) hiddenMarkers[i] = true;
+            }
             foreach (MarkdownScriptSpan span in GetMarkdownScriptSpansForLine(line))
             {
                 if (MarkdownScriptMarkersAreVisible(line, span)) continue;
@@ -812,6 +979,16 @@ namespace Markify.Textify
             var sourceBoundaries = new List<int>(sourceEndColumn - sourceStartColumn + 1) { sourceStartColumn };
             for (int column = sourceStartColumn; column < sourceEndColumn; column++)
             {
+                if (hasTaskMarker && !taskMarkersVisible && column == taskMarker.Start &&
+                    taskMarker.End <= sourceEndColumn)
+                {
+                    sourceBoundaries[sourceBoundaries.Count - 1] = column;
+                    text.Append(taskMarker.IsChecked ? '\u2611' : '\u2610');
+                    sourceColumns.Add(column);
+                    sourceBoundaries.Add(taskMarker.End);
+                    column = taskMarker.End - 1;
+                    continue;
+                }
                 if (hiddenMarkers[column])
                 {
                     sourceBoundaries[sourceBoundaries.Count - 1] = column + 1;
@@ -897,6 +1074,25 @@ namespace Markify.Textify
                     while (index < sourceColumns.Length &&
                         sourceColumns[index] >= span.Start && sourceColumns[index] < span.Start + span.Length) index++;
                     if (index > start) formatted.SetFontStyle(FontStyles.Italic, start, index - start);
+                }
+            }
+        }
+
+        internal void ApplyMarkdownStrikethrough(FormattedText formatted, int line, int[] sourceColumns)
+        {
+            if (sourceColumns == null || sourceColumns.Length == 0) return;
+            foreach (SelectionSpan span in GetMarkdownStrikethroughContentSpansForLine(line))
+            {
+                int index = 0;
+                while (index < sourceColumns.Length)
+                {
+                    while (index < sourceColumns.Length &&
+                        (sourceColumns[index] < span.Start || sourceColumns[index] >= span.Start + span.Length)) index++;
+                    int start = index;
+                    while (index < sourceColumns.Length &&
+                        sourceColumns[index] >= span.Start && sourceColumns[index] < span.Start + span.Length) index++;
+                    if (index > start)
+                        formatted.SetTextDecorations(TextDecorations.Strikethrough, start, index - start);
                 }
             }
         }
@@ -1017,9 +1213,12 @@ namespace Markify.Textify
             Array.Copy(segment.SourceColumns, sourceColumns, displayLength);
             ApplyMarkdownBold(formatted, line, sourceColumns);
             ApplyMarkdownItalic(formatted, line, sourceColumns);
+            ApplyMarkdownStrikethrough(formatted, line, sourceColumns);
             ApplyMarkdownScriptStyle(formatted, line, sourceColumns);
             ApplyMarkdownInlineCode(formatted, line, sourceColumns);
             ApplyMarkdownCodeFenceStyle(formatted, line, displayLength);
+            ApplyMarkdownTaskMarkerStyle(formatted, line, sourceColumns);
+            ApplyMarkdownLinkStyle(formatted, line, sourceColumns);
             ApplyMarkdownListMarkerStyle(formatted, line, sourceColumns);
             return formatted.WidthIncludingTrailingWhitespace;
         }
@@ -1079,7 +1278,14 @@ namespace Markify.Textify
 
         private double LineHeightForDocumentLine(int line)
         {
-            return Math.Ceiling(FontSizeForLine(line) * 1.45);
+            double textHeight = Math.Ceiling(FontSizeForLine(line) * 1.45);
+            MarkdownTableLayout tableLayout;
+            if (TryGetMarkdownTableLayout(line, out tableLayout) && tableLayout.IsSeparator &&
+                !tableLayout.IsSourceVisible) return 2;
+            MarkdownMediaBlock media;
+            if (TryGetMarkdownMediaBlockForLine(line, out media))
+                return Math.Max(textHeight, media.IsVideo ? MarkdownVideoHeight + 8 : MarkdownImageMaxHeight + 8);
+            return textHeight;
         }
 
         internal double MeasureTextWidthForLine(string value, int line, int sourceStartColumn = 0)
@@ -1132,6 +1338,18 @@ namespace Markify.Textify
                     italicSignature += (italicStart - sourceStartColumn) + "," + (italicEnd - italicStart) + ";";
                 }
             }
+            bool containsStrikethroughText = false;
+            string strikethroughSignature = string.Empty;
+            foreach (SelectionSpan span in GetMarkdownStrikethroughContentSpansForLine(line))
+            {
+                int strikeStart = Math.Max(span.Start, sourceStartColumn);
+                int strikeEnd = Math.Min(span.Start + span.Length, sourceEndColumn);
+                if (strikeEnd > strikeStart)
+                {
+                    containsStrikethroughText = true;
+                    strikethroughSignature += (strikeStart - sourceStartColumn) + "," + (strikeEnd - strikeStart) + ";";
+                }
+            }
             bool containsScriptText = false;
             string scriptSignature = string.Empty;
             foreach (MarkdownScriptSpan span in GetMarkdownScriptSpansForLine(line))
@@ -1145,7 +1363,7 @@ namespace Markify.Textify
                         (scriptStart - sourceStartColumn) + "," + (scriptEnd - scriptStart) + ";";
                 }
             }
-            if (level == 0 && !containsBoldText && !containsItalicText && !containsScriptText &&
+            if (level == 0 && !containsBoldText && !containsItalicText && !containsStrikethroughText && !containsScriptText &&
                 !containsCodeText && !replaceListMarkerWithBullet)
                 return MeasureTextWidth(value);
             var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
@@ -1155,7 +1373,7 @@ namespace Markify.Textify
                 _metricDpi = dpi;
             }
             string cacheKey = "\u0001styled" + level + ":" + sourceStartColumn + ":" + boldSignature + ":" +
-                italicSignature + ":" + scriptSignature + ":" + codeSignature + ":" + renderedValue;
+                italicSignature + ":" + strikethroughSignature + ":" + scriptSignature + ":" + codeSignature + ":" + renderedValue;
             double cachedWidth;
             if (_textWidthCache.TryGetValue(cacheKey, out cachedWidth)) return cachedWidth;
             var typeface = new Typeface(FontFamily, FontStyles.Normal,
@@ -1166,9 +1384,12 @@ namespace Markify.Textify
             var sourceColumns = new int[value.Length];
             for (int i = 0; i < sourceColumns.Length; i++) sourceColumns[i] = sourceStartColumn + i;
             ApplyMarkdownItalic(formatted, line, sourceColumns);
+            ApplyMarkdownStrikethrough(formatted, line, sourceColumns);
             ApplyMarkdownScriptStyle(formatted, line, sourceColumns);
             ApplyMarkdownInlineCode(formatted, line, sourceColumns);
             ApplyMarkdownCodeFenceStyle(formatted, line, value.Length);
+            ApplyMarkdownTaskMarkerStyle(formatted, line, sourceColumns);
+            ApplyMarkdownLinkStyle(formatted, line, sourceColumns);
             ApplyMarkdownListMarkerStyle(formatted, line, sourceColumns);
             double width = formatted.WidthIncludingTrailingWhitespace;
             if (_textWidthCache.Count >= 4096) _textWidthCache.Clear();
@@ -1244,7 +1465,22 @@ namespace Markify.Textify
                 if (text[i] == '\n') _lineStarts.Add(i + 1);
             _lineCache = text.Split('\n');
             RebuildMarkdownCodeFenceBlocks();
+            RebuildMarkdownListMarkerCache();
+            RebuildMarkdownTableCache();
             RebuildVisibleLineMap();
+            RebuildMarkdownVideoPlayers();
+        }
+
+        private void RebuildMarkdownListMarkerCache()
+        {
+            _markdownListMarkersByLine = new MarkdownListMarker[_lineCache.Length];
+            _markdownListMarkersParsed = new bool[_lineCache.Length];
+            if (!EnableMarkdownLists) return;
+            for (int line = 0; line < _lineCache.Length; line++)
+            {
+                MarkdownListMarker marker;
+                TryGetMarkdownListMarkerForLine(line, out marker);
+            }
         }
 
         private void RebuildVisibleLineMap()
@@ -1274,6 +1510,7 @@ namespace Markify.Textify
                 _visibleRowTops[row] = _totalVisualHeight;
                 _totalVisualHeight += LineHeightForDocumentLine(_visibleLines[row]);
             }
+            UpdateMarkdownVideoPlayerLayout();
         }
 
         private void AddVisualRowsForLine(int line, List<int> visible, List<int> starts, List<int> lengths)
@@ -1287,6 +1524,22 @@ namespace Markify.Textify
                 return;
             }
             if (IsMarkdownHorizontalRuleLine(line))
+            {
+                visible.Add(line);
+                starts.Add(0);
+                lengths.Add(value.Length);
+                return;
+            }
+            MarkdownMediaBlock mediaBlock;
+            if (TryGetMarkdownMediaBlockForLine(line, out mediaBlock))
+            {
+                visible.Add(line);
+                starts.Add(0);
+                lengths.Add(value.Length);
+                return;
+            }
+            MarkdownTableLayout tableLayout;
+            if (TryGetMarkdownTableLayout(line, out tableLayout))
             {
                 visible.Add(line);
                 starts.Add(0);
@@ -1361,6 +1614,8 @@ namespace Markify.Textify
                 e.Property == EnableMarkdownInlineCodeProperty || e.Property == EnableMarkdownCodeBlocksProperty ||
                 e.Property == EnableMarkdownListsProperty || e.Property == EnableMarkdownHorizontalRulesProperty)
             {
+                if (e.Property == EnableMarkdownCodeBlocksProperty || e.Property == EnableMarkdownListsProperty)
+                    editor.RebuildMarkdownListMarkerCache();
                 editor._textWidthCache.Clear();
                 editor.UpdateWrapWidth();
                 editor.RebuildVisibleLineMap();
