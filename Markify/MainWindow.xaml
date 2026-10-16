@@ -12,6 +12,7 @@
                             Margin="12"
                             Text=""
                             EnableMarkdownHeadings="True"
+                            EnableMarkdownBold="True"
                             EnableMarkdownHorizontalRules="True"
                             FontFamily="Consolas"
                             FontSize="14" />

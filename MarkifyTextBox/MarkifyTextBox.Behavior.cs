@@ -324,31 +324,33 @@ namespace Markify.Textify
             int segmentStart = VisibleRowStartColumn(row);
             int segmentEnd = segmentStart + VisibleRowLength(row);
             int renderedStart = RenderedStartColumnForRow(row);
-            int lineStart = GetLineStart(line) + renderedStart;
+            int lineStart = GetLineStart(line);
             if (IsMarkdownHorizontalRuleLine(line) && !MarkdownHorizontalRuleSourceIsVisible(line))
             {
                 int sourceLength = Math.Max(0, GetLineEndAtLine(line) - GetLineStart(line));
                 double ruleWidth = Math.Max(1, _surface.ActualWidth - TextOrigin * 2);
                 double relativePosition = Math.Max(0, Math.Min(1, (point.X - TextOrigin) / ruleWidth));
-                return GetLineStart(line) + (int)Math.Round(relativePosition * sourceLength);
+                return lineStart + (int)Math.Round(relativePosition * sourceLength);
             }
-            string visibleLine = Text.Substring(lineStart, Math.Min(Math.Max(0, segmentEnd - renderedStart), Math.Max(0, LineEnd(lineStart) - lineStart)));
+            int clampedSegmentEnd = Math.Min(segmentEnd, GetLineEndAtLine(line) - lineStart);
+            RenderedTextSegment renderedSegment = CreateRenderedTextSegment(line, renderedStart, clampedSegmentEnd);
+            string visibleLine = renderedSegment.Text;
             double targetX = Math.Max(0, point.X - TextOrigin);
             int low = 0, high = visibleLine.Length;
             while (low < high)
             {
                 int mid = (low + high + 1) / 2;
-                if (MeasureTextWidthForLine(visibleLine.Substring(0, mid), line) <= targetX) low = mid;
+                if (MeasureRenderedTextWidthForLine(renderedSegment, line, mid) <= targetX) low = mid;
                 else high = mid - 1;
             }
             int col = low;
             if (col < visibleLine.Length)
             {
-                double left = MeasureTextWidthForLine(visibleLine.Substring(0, col), line);
-                double right = MeasureTextWidthForLine(visibleLine.Substring(0, col + 1), line);
+                double left = MeasureRenderedTextWidthForLine(renderedSegment, line, col);
+                double right = MeasureRenderedTextWidthForLine(renderedSegment, line, col + 1);
                 if (targetX - left > (right - left) / 2) col++;
             }
-            return Math.Min(LineEnd(lineStart), Math.Max(lineStart, lineStart + col));
+            return lineStart + renderedSegment.SourceBoundaries[col];
         }
 
         private void HandleMouseUp(object sender, MouseButtonEventArgs e) { _surface.ReleaseMouseCapture(); }
@@ -364,11 +366,12 @@ namespace Markify.Textify
             int lineStart = LineStart(_caret);
             int lineEnd = LineEnd(lineStart);
             int visibleRow = VisibleRowForPosition(_caret);
-            int visibleStart = lineStart + RenderedStartColumnForRow(visibleRow);
-            int prefixEnd = Math.Min(_caret, lineEnd);
-            string prefix = Text.Substring(visibleStart, Math.Max(0, prefixEnd - visibleStart));
             int line = LineIndexAt(_caret);
-            double x = TextOrigin + MeasureTextWidthForLine(prefix, line);
+            int renderedStart = RenderedStartColumnForRow(visibleRow);
+            int segmentEnd = Math.Min(VisibleRowStartColumn(visibleRow) + VisibleRowLength(visibleRow), lineEnd - lineStart);
+            RenderedTextSegment renderedSegment = CreateRenderedTextSegment(line, renderedStart, segmentEnd);
+            int displayColumn = RenderedBoundaryForSourceColumn(renderedSegment, _caret - lineStart);
+            double x = TextOrigin + MeasureRenderedTextWidthForLine(renderedSegment, line, displayColumn);
             double y = TopInset + VisibleRowTop(visibleRow);
             double rowHeight = LineHeightForVisibleRow(visibleRow);
             if (x < _scroll.HorizontalOffset) _scroll.ScrollToHorizontalOffset(x);

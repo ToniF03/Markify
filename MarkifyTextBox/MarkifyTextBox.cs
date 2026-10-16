@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -13,6 +14,13 @@ namespace Markify.Textify
     /// <summary>A small, self-contained WPF text editor. It does not derive from TextBox.</summary>
     public sealed partial class MarkifyTextBox : Grid
     {
+        internal sealed class RenderedTextSegment
+        {
+            public string Text;
+            public int[] SourceColumns;
+            public int[] SourceBoundaries;
+        }
+
         public static readonly DependencyProperty TextProperty = DependencyProperty.Register(
             nameof(Text), typeof(string), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(string.Empty, OnTextChanged));
         public static readonly DependencyProperty ShowBorderProperty = DependencyProperty.Register(
@@ -23,6 +31,8 @@ namespace Markify.Textify
             nameof(FontSize), typeof(double), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(14d, OnVisualOptionChanged));
         public static readonly DependencyProperty EnableMarkdownHeadingsProperty = DependencyProperty.Register(
             nameof(EnableMarkdownHeadings), typeof(bool), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(true, OnVisualOptionChanged));
+        public static readonly DependencyProperty EnableMarkdownBoldProperty = DependencyProperty.Register(
+            nameof(EnableMarkdownBold), typeof(bool), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(true, OnVisualOptionChanged));
         public static readonly DependencyProperty EnableMarkdownHorizontalRulesProperty = DependencyProperty.Register(
             nameof(EnableMarkdownHorizontalRules), typeof(bool), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(true, OnVisualOptionChanged));
         public static readonly DependencyProperty ForegroundProperty = DependencyProperty.Register(
@@ -109,6 +119,7 @@ namespace Markify.Textify
         public FontFamily FontFamily { get { return (FontFamily)GetValue(FontFamilyProperty); } set { SetValue(FontFamilyProperty, value); } }
         public double FontSize { get { return (double)GetValue(FontSizeProperty); } set { SetValue(FontSizeProperty, value); } }
         public bool EnableMarkdownHeadings { get { return (bool)GetValue(EnableMarkdownHeadingsProperty); } set { SetValue(EnableMarkdownHeadingsProperty, value); } }
+        public bool EnableMarkdownBold { get { return (bool)GetValue(EnableMarkdownBoldProperty); } set { SetValue(EnableMarkdownBoldProperty, value); } }
         public bool EnableMarkdownHorizontalRules { get { return (bool)GetValue(EnableMarkdownHorizontalRulesProperty); } set { SetValue(EnableMarkdownHorizontalRulesProperty, value); } }
         public Brush Foreground { get { return (Brush)GetValue(ForegroundProperty); } set { SetValue(ForegroundProperty, value); } }
         public bool IsReadOnly { get { return (bool)GetValue(IsReadOnlyProperty); } set { SetValue(IsReadOnlyProperty, value); } }
@@ -224,7 +235,151 @@ namespace Markify.Textify
             if (_caret >= lineStart && _caret <= lineEnd) return true;
             foreach (int caret in AdditionalCaretPositions)
                 if (caret >= lineStart && caret <= lineEnd) return true;
+            foreach (SelectionSpan selection in GetSelectionSpansForLine(line))
+                if (selection.Start < lineEnd && selection.Start + selection.Length > lineStart) return true;
             return false;
+        }
+
+        internal List<SelectionSpan> GetMarkdownBoldContentSpansForLine(int line)
+        {
+            var spans = new List<SelectionSpan>();
+            if (!EnableMarkdownBold || line < 0 || line >= _lineCache.Length) return spans;
+
+            string value = _lineCache[line].TrimEnd('\r');
+            int searchFrom = 0;
+            while (searchFrom < value.Length)
+            {
+                int opening = value.IndexOf("**", searchFrom, StringComparison.Ordinal);
+                if (opening < 0) break;
+                int closing = value.IndexOf("**", opening + 2, StringComparison.Ordinal);
+                if (closing < 0) break;
+                if (closing > opening + 2)
+                    spans.Add(new SelectionSpan(opening + 2, closing - opening - 2));
+                searchFrom = closing + 2;
+            }
+            return spans;
+        }
+
+        internal bool MarkdownBoldMarkersAreVisible(int line, SelectionSpan contentSpan)
+        {
+            int lineStart = GetLineStart(line);
+            int pairStart = lineStart + contentSpan.Start - 2;
+            int pairEnd = lineStart + contentSpan.Start + contentSpan.Length + 2;
+            if (_caret >= pairStart && _caret <= pairEnd) return true;
+            foreach (int caret in AdditionalCaretPositions)
+                if (caret >= pairStart && caret <= pairEnd) return true;
+            foreach (SelectionSpan selection in GetSelectionSpansForLine(line))
+                if (selection.Start < pairEnd && selection.Start + selection.Length > pairStart) return true;
+            return false;
+        }
+
+        internal RenderedTextSegment CreateRenderedTextSegment(int line, int sourceStartColumn, int sourceEndColumn)
+        {
+            string value = _lineCache[Math.Max(0, Math.Min(_lineCache.Length - 1, line))].TrimEnd('\r');
+            sourceStartColumn = Math.Max(0, Math.Min(value.Length, sourceStartColumn));
+            sourceEndColumn = Math.Max(sourceStartColumn, Math.Min(value.Length, sourceEndColumn));
+            var hiddenMarkers = new bool[value.Length];
+            foreach (SelectionSpan span in GetMarkdownBoldContentSpansForLine(line))
+            {
+                if (MarkdownBoldMarkersAreVisible(line, span)) continue;
+                int opening = span.Start - 2;
+                int closing = span.Start + span.Length;
+                for (int i = opening; i < opening + 2 && i < hiddenMarkers.Length; i++)
+                    if (i >= 0) hiddenMarkers[i] = true;
+                for (int i = closing; i < closing + 2 && i < hiddenMarkers.Length; i++)
+                    if (i >= 0) hiddenMarkers[i] = true;
+            }
+
+            var text = new StringBuilder(sourceEndColumn - sourceStartColumn);
+            var sourceColumns = new List<int>(sourceEndColumn - sourceStartColumn);
+            var sourceBoundaries = new List<int>(sourceEndColumn - sourceStartColumn + 1) { sourceStartColumn };
+            for (int column = sourceStartColumn; column < sourceEndColumn; column++)
+            {
+                if (hiddenMarkers[column])
+                {
+                    sourceBoundaries[sourceBoundaries.Count - 1] = column + 1;
+                    continue;
+                }
+                text.Append(value[column]);
+                sourceColumns.Add(column);
+                sourceBoundaries.Add(column + 1);
+            }
+            return new RenderedTextSegment
+            {
+                Text = text.ToString(),
+                SourceColumns = sourceColumns.ToArray(),
+                SourceBoundaries = sourceBoundaries.ToArray()
+            };
+        }
+
+        internal int RenderedBoundaryForSourceColumn(RenderedTextSegment segment, int sourceColumn)
+        {
+            int[] boundaries = segment.SourceBoundaries;
+            int low = 0, high = boundaries.Length - 1;
+            while (low < high)
+            {
+                int middle = (low + high) / 2;
+                if (boundaries[middle] < sourceColumn) low = middle + 1;
+                else high = middle;
+            }
+            if (low > 0 && Math.Abs(boundaries[low - 1] - sourceColumn) <= Math.Abs(boundaries[low] - sourceColumn))
+                return low - 1;
+            return low;
+        }
+
+        internal int RenderedCharacterForSourceColumn(RenderedTextSegment segment, int sourceColumn)
+        {
+            for (int i = 0; i < segment.SourceColumns.Length; i++)
+                if (segment.SourceColumns[i] == sourceColumn) return i;
+            return -1;
+        }
+
+        internal void ApplyMarkdownBold(FormattedText formatted, int line, int sourceStartColumn, int visibleLength)
+        {
+            if (!EnableMarkdownBold || visibleLength <= 0) return;
+            int sourceEndColumn = sourceStartColumn + visibleLength;
+            foreach (SelectionSpan span in GetMarkdownBoldContentSpansForLine(line))
+            {
+                int start = Math.Max(span.Start, sourceStartColumn);
+                int end = Math.Min(span.Start + span.Length, sourceEndColumn);
+                if (end > start)
+                    formatted.SetFontWeight(FontWeights.Bold, start - sourceStartColumn, end - start);
+            }
+        }
+
+        internal void ApplyMarkdownBold(FormattedText formatted, int line, int[] sourceColumns)
+        {
+            if (!EnableMarkdownBold || sourceColumns == null || sourceColumns.Length == 0) return;
+            foreach (SelectionSpan span in GetMarkdownBoldContentSpansForLine(line))
+            {
+                int index = 0;
+                while (index < sourceColumns.Length)
+                {
+                    while (index < sourceColumns.Length &&
+                        (sourceColumns[index] < span.Start || sourceColumns[index] >= span.Start + span.Length)) index++;
+                    int start = index;
+                    while (index < sourceColumns.Length &&
+                        sourceColumns[index] >= span.Start && sourceColumns[index] < span.Start + span.Length) index++;
+                    if (index > start) formatted.SetFontWeight(FontWeights.Bold, start, index - start);
+                }
+            }
+        }
+
+        internal double MeasureRenderedTextWidthForLine(RenderedTextSegment segment, int line, int displayLength)
+        {
+            displayLength = Math.Max(0, Math.Min(segment.Text.Length, displayLength));
+            if (displayLength == 0) return 0;
+            string value = segment.Text.Substring(0, displayLength);
+            int headingLevel = MarkdownHeadingLevelForLine(line);
+            var typeface = new Typeface(FontFamily, FontStyles.Normal,
+                headingLevel > 0 ? FontWeights.Bold : FontWeights.Normal, FontStretches.Normal);
+            double dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+            var formatted = new FormattedText(value, System.Globalization.CultureInfo.CurrentUICulture,
+                FlowDirection, typeface, FontSizeForLine(line), Foreground, dpi);
+            var sourceColumns = new int[displayLength];
+            Array.Copy(segment.SourceColumns, sourceColumns, displayLength);
+            ApplyMarkdownBold(formatted, line, sourceColumns);
+            return formatted.WidthIncludingTrailingWhitespace;
         }
 
         internal int MarkdownHeadingPrefixLengthForLine(int line)
@@ -244,7 +399,13 @@ namespace Markify.Textify
             int prefixLength = MarkdownHeadingPrefixLengthForLine(line);
             if (prefixLength <= 0) return false;
             int lineStart = GetLineStart(line);
-            return _caret >= lineStart && _caret <= lineStart + prefixLength;
+            int prefixEnd = lineStart + prefixLength;
+            if (_caret >= lineStart && _caret <= prefixEnd) return true;
+            foreach (int caret in AdditionalCaretPositions)
+                if (caret >= lineStart && caret <= prefixEnd) return true;
+            foreach (SelectionSpan selection in GetSelectionSpansForLine(line))
+                if (selection.Start < prefixEnd && selection.Start + selection.Length > lineStart) return true;
+            return false;
         }
 
         internal int RenderedStartColumnForLine(int line)
@@ -279,22 +440,38 @@ namespace Markify.Textify
             return Math.Ceiling(FontSizeForLine(line) * 1.45);
         }
 
-        internal double MeasureTextWidthForLine(string value, int line)
+        internal double MeasureTextWidthForLine(string value, int line, int sourceStartColumn = 0)
         {
             int level = MarkdownHeadingLevelForLine(line);
-            if (level == 0) return MeasureTextWidth(value);
+            List<SelectionSpan> boldSpans = GetMarkdownBoldContentSpansForLine(line);
+            bool containsBoldText = false;
+            int sourceEndColumn = sourceStartColumn + value.Length;
+            string boldSignature = string.Empty;
+            foreach (SelectionSpan span in boldSpans)
+            {
+                int boldStart = Math.Max(span.Start, sourceStartColumn);
+                int boldEnd = Math.Min(span.Start + span.Length, sourceEndColumn);
+                if (boldEnd > boldStart)
+                {
+                    containsBoldText = true;
+                    boldSignature += (boldStart - sourceStartColumn) + "," + (boldEnd - boldStart) + ";";
+                }
+            }
+            if (level == 0 && !containsBoldText) return MeasureTextWidth(value);
             var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
             if (Math.Abs(_metricDpi - dpi) > 0.001)
             {
                 _textWidthCache.Clear();
                 _metricDpi = dpi;
             }
-            string cacheKey = "\u0001heading" + level + ":" + value;
+            string cacheKey = "\u0001styled" + level + ":" + sourceStartColumn + ":" + boldSignature + ":" + value;
             double cachedWidth;
             if (_textWidthCache.TryGetValue(cacheKey, out cachedWidth)) return cachedWidth;
-            var typeface = new Typeface(FontFamily, FontStyles.Normal, FontWeights.Bold, FontStretches.Normal);
+            var typeface = new Typeface(FontFamily, FontStyles.Normal,
+                level > 0 ? FontWeights.Bold : FontWeights.Normal, FontStretches.Normal);
             var formatted = new FormattedText(value, System.Globalization.CultureInfo.CurrentUICulture,
                 FlowDirection, typeface, FontSizeForLine(line), Foreground, dpi);
+            ApplyMarkdownBold(formatted, line, sourceStartColumn, value.Length);
             double width = formatted.WidthIncludingTrailingWhitespace;
             if (_textWidthCache.Count >= 4096) _textWidthCache.Clear();
             _textWidthCache[cacheKey] = width;
@@ -425,7 +602,7 @@ namespace Markify.Textify
                 while (low < high)
                 {
                     int middle = (low + high + 1) / 2;
-                    if (MeasureTextWidthForLine(value.Substring(column, middle - column), line) <= _wrapTextWidth) low = middle;
+                    if (MeasureTextWidthForLine(value.Substring(column, middle - column), line, column) <= _wrapTextWidth) low = middle;
                     else high = middle - 1;
                 }
                 int end = low;
@@ -472,7 +649,8 @@ namespace Markify.Textify
         {
             var editor = (MarkifyTextBox)d;
             if (e.Property == FontFamilyProperty || e.Property == FontSizeProperty ||
-                e.Property == EnableMarkdownHeadingsProperty || e.Property == EnableMarkdownHorizontalRulesProperty)
+                e.Property == EnableMarkdownHeadingsProperty || e.Property == EnableMarkdownBoldProperty ||
+                e.Property == EnableMarkdownHorizontalRulesProperty)
             {
                 editor._textWidthCache.Clear();
                 editor.UpdateWrapWidth();

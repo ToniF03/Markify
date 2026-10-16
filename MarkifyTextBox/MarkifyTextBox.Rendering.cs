@@ -79,8 +79,9 @@ namespace Markify.Textify
                     int segmentStart = _editor.VisibleRowStartColumn(row);
                     int segmentEnd = segmentStart + Math.Min(_editor.VisibleRowLength(row), Math.Max(0, fullLine.Length - segmentStart));
                     int renderedStart = _editor.RenderedStartColumnForRow(row);
-                    int segmentLength = Math.Max(0, segmentEnd - renderedStart);
-                    string line = fullLine.Substring(renderedStart, segmentLength);
+                    MarkifyTextBox.RenderedTextSegment renderedSegment =
+                        _editor.CreateRenderedTextSegment(documentLine, renderedStart, segmentEnd);
+                    string line = renderedSegment.Text;
                     double rowHeight = _editor.LineHeightForVisibleRow(row);
                     double y = TopInset + _editor.VisibleRowTop(row);
                     if (_editor.HighlightCurrentLine && _editor.LineIndexAt(_editor.Caret) == documentLine)
@@ -113,25 +114,38 @@ namespace Markify.Textify
                     int lineEnd = offset + fullLine.Length;
                     foreach (var span in _editor.GetSelectionSpansForLine(documentLine))
                     {
-                        int from = Math.Max(span.Start, offset + renderedStart);
-                        int to = Math.Min(span.Start + span.Length, offset + segmentEnd);
-                        if (to <= from) continue;
-                        int fromColumn = from - offset - renderedStart;
-                        int toColumn = to - offset - renderedStart;
-                        double x = _editor.TextOrigin + _editor.MeasureTextWidthForLine(line.Substring(0, fromColumn), documentLine);
-                        double w = _editor.MeasureTextWidthForLine(line.Substring(0, toColumn), documentLine) -
-                            _editor.MeasureTextWidthForLine(line.Substring(0, fromColumn), documentLine);
-                        dc.DrawRectangle(SelectionBackground, null, new Rect(x, y, w, rowHeight));
+                        int selectionStart = -1;
+                        for (int column = 0; column <= visibleLength; column++)
+                        {
+                            bool selected = column < visibleLength &&
+                                offset + renderedSegment.SourceColumns[column] >= span.Start &&
+                                offset + renderedSegment.SourceColumns[column] < span.Start + span.Length;
+                            if (selected && selectionStart < 0) selectionStart = column;
+                            if (!selected && selectionStart >= 0)
+                            {
+                                double x = _editor.TextOrigin +
+                                    _editor.MeasureRenderedTextWidthForLine(renderedSegment, documentLine, selectionStart);
+                                double endX = _editor.TextOrigin +
+                                    _editor.MeasureRenderedTextWidthForLine(renderedSegment, documentLine, column);
+                                dc.DrawRectangle(SelectionBackground, null, new Rect(x, y, endX - x, rowHeight));
+                                selectionStart = -1;
+                            }
+                        }
                     }
-                    if (matchingBracket >= offset + renderedStart && matchingBracket < offset + segmentEnd)
-                        DrawBracketHighlight(dc, line, y, matchingBracket - offset - renderedStart, documentLine, rowHeight);
-                    if (bracketCandidate >= offset + renderedStart && bracketCandidate < offset + segmentEnd)
-                        DrawBracketHighlight(dc, line, y, bracketCandidate - offset - renderedStart, documentLine, rowHeight);
+                    int matchingBracketColumn = matchingBracket >= offset ?
+                        _editor.RenderedCharacterForSourceColumn(renderedSegment, matchingBracket - offset) : -1;
+                    int bracketCandidateColumn = bracketCandidate >= offset ?
+                        _editor.RenderedCharacterForSourceColumn(renderedSegment, bracketCandidate - offset) : -1;
+                    if (matchingBracketColumn >= 0)
+                        DrawBracketHighlight(dc, renderedSegment, y, matchingBracketColumn, documentLine, rowHeight);
+                    if (bracketCandidateColumn >= 0)
+                        DrawBracketHighlight(dc, renderedSegment, y, bracketCandidateColumn, documentLine, rowHeight);
                     if (line.Length > 0)
                     {
                         var formatted = MakeText(line, typeface, lineBrush, dpi, fontSize);
                         if (_editor.EnableSyntaxHighlighting)
                             _editor.ApplySyntaxHighlighting(formatted, line, documentLine);
+                        _editor.ApplyMarkdownBold(formatted, documentLine, renderedSegment.SourceColumns);
                         dc.DrawText(formatted, new Point(_editor.TextOrigin, y + Math.Max(0, (rowHeight - formatted.Height) / 2)));
                     }
                     if (_editor.HasFocus && _editor.CaretVisible && _editor.SelectionLength == 0 &&
@@ -139,8 +153,10 @@ namespace Markify.Textify
                         _editor.VisibleRowForPosition(_editor.Caret) == row &&
                         _editor.LineIndexAt(_editor.Caret) == documentLine && _editor.Caret >= offset && _editor.Caret <= lineEnd)
                     {
-                        int col = Math.Max(0, Math.Min(visibleLength, _editor.Caret - offset - renderedStart));
-                        double cx = _editor.TextOrigin + _editor.MeasureTextWidthForLine(line.Substring(0, col), documentLine);
+                        int sourceColumn = _editor.Caret - offset;
+                        int col = _editor.RenderedBoundaryForSourceColumn(renderedSegment, sourceColumn);
+                        double cx = _editor.TextOrigin +
+                            _editor.MeasureRenderedTextWidthForLine(renderedSegment, documentLine, col);
                         dc.DrawRectangle(CaretForeground, null,
                             new Rect(cx, y + 1, 1.4, rowHeight - 2));
                     }
@@ -148,18 +164,21 @@ namespace Markify.Textify
                     {
                         if (!_editor.HasFocus) break;
                         if (_editor.VisibleRowForPosition(secondaryCaret) != row) continue;
-                        int localColumn = Math.Max(0, Math.Min(visibleLength, secondaryCaret - offset - renderedStart));
-                        double x = _editor.TextOrigin + _editor.MeasureTextWidthForLine(line.Substring(0, localColumn), documentLine);
+                        int localColumn = _editor.RenderedBoundaryForSourceColumn(renderedSegment, secondaryCaret - offset);
+                        double x = _editor.TextOrigin +
+                            _editor.MeasureRenderedTextWidthForLine(renderedSegment, documentLine, localColumn);
                         dc.DrawRectangle(CaretForeground, null, new Rect(x, y + 2, 1.2, rowHeight - 4));
                     }
                 }
             }
 
-            private void DrawBracketHighlight(DrawingContext dc, string line, double y, int column, int documentLine, double rowHeight)
+            private void DrawBracketHighlight(DrawingContext dc, MarkifyTextBox.RenderedTextSegment segment,
+                double y, int column, int documentLine, double rowHeight)
             {
-                if (column < 0 || column >= line.Length) return;
-                double x = _editor.TextOrigin + _editor.MeasureTextWidthForLine(line.Substring(0, column), documentLine);
-                double width = _editor.MeasureTextWidthForLine(line.Substring(column, 1), documentLine);
+                if (column < 0 || column >= segment.Text.Length) return;
+                double x = _editor.TextOrigin + _editor.MeasureRenderedTextWidthForLine(segment, documentLine, column);
+                double width = _editor.MeasureRenderedTextWidthForLine(segment, documentLine, column + 1) -
+                    _editor.MeasureRenderedTextWidthForLine(segment, documentLine, column);
                 dc.DrawRectangle(BracketBackground, null, new Rect(x, y + 1, Math.Max(2, width), rowHeight - 2));
             }
 
