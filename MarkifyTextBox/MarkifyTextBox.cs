@@ -6,6 +6,7 @@ using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 
@@ -42,7 +43,7 @@ namespace Markify.Textify
         public static readonly DependencyProperty IsWordWrapEnabledProperty = DependencyProperty.Register(
             nameof(IsWordWrapEnabled), typeof(bool), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(false, OnWordWrapChanged));
         public static readonly DependencyProperty IsHorizontalScrollEnabledProperty = DependencyProperty.Register(
-            nameof(IsHorizontalScrollEnabled), typeof(bool), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(false, OnHorizontalScrollChanged));
+            nameof(IsHorizontalScrollEnabled), typeof(bool), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(true, OnHorizontalScrollChanged));
         public static readonly DependencyProperty HighlightCurrentLineProperty = DependencyProperty.Register(
             nameof(HighlightCurrentLine), typeof(bool), typeof(MarkifyTextBox), new FrameworkPropertyMetadata(false, OnVisualOptionChanged));
         public static readonly DependencyProperty CurrentLineBackgroundProperty = DependencyProperty.Register(
@@ -70,6 +71,7 @@ namespace Markify.Textify
         private readonly ScrollViewer _scroll;
         private readonly EditorSurface _surface;
         private readonly Border _border;
+        private HwndSource _windowSource;
         private readonly List<EditSnapshot> _undo = new List<EditSnapshot>();
         private readonly List<EditSnapshot> _redo = new List<EditSnapshot>();
         private readonly Dictionary<string, double> _textWidthCache = new Dictionary<string, double>(StringComparer.Ordinal);
@@ -174,6 +176,8 @@ namespace Markify.Textify
             _caretTimer.Start();
             PreviewKeyDown += HandleKeyDown;
             TextInput += HandleTextInput;
+            Loaded += AttachHorizontalWheelHook;
+            Unloaded += DetachHorizontalWheelHook;
             GotKeyboardFocus += (s, e) => { _caretVisible = true; _surface.InvalidateVisual(); };
             LostKeyboardFocus += (s, e) => { _surface.InvalidateVisual(); };
             _surface.MouseDown += HandleMouseDown;
@@ -734,6 +738,36 @@ namespace Markify.Textify
             if (_scroll == null) return;
             _scroll.HorizontalScrollBarVisibility = IsWordWrapEnabled || !IsHorizontalScrollEnabled
                 ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto;
+        }
+
+        private void AttachHorizontalWheelHook(object sender, RoutedEventArgs e)
+        {
+            var source = PresentationSource.FromVisual(this) as HwndSource;
+            if (source == null || ReferenceEquals(source, _windowSource)) return;
+            DetachHorizontalWheelHook(this, e);
+            _windowSource = source;
+            _windowSource.AddHook(HandleHorizontalWheelMessage);
+        }
+
+        private void DetachHorizontalWheelHook(object sender, RoutedEventArgs e)
+        {
+            if (_windowSource == null) return;
+            _windowSource.RemoveHook(HandleHorizontalWheelMessage);
+            _windowSource = null;
+        }
+
+        private IntPtr HandleHorizontalWheelMessage(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            const int wmMouseHWheel = 0x020E;
+            if (message != wmMouseHWheel || !IsHorizontalScrollEnabled || IsWordWrapEnabled || !IsMouseOver)
+                return IntPtr.Zero;
+
+            int delta = (short)((wParam.ToInt64() >> 16) & 0xffff);
+            if (delta == 0) return IntPtr.Zero;
+
+            _scroll.ScrollToHorizontalOffset(_scroll.HorizontalOffset + delta);
+            handled = true;
+            return IntPtr.Zero;
         }
 
         private void OnSyntaxHighlightingChanged(object sender, NotifyCollectionChangedEventArgs e)
