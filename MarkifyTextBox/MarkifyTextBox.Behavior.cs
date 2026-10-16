@@ -310,6 +310,11 @@ namespace Markify.Textify
                 (modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) == (ModifierKeys.Control | ModifierKeys.Alt);
             Focus(); _surface.Focus();
             Point point = e.GetPosition(_surface);
+            if (TryCopyMarkdownCodeFenceAtPoint(point))
+            {
+                e.Handled = true;
+                return;
+            }
             if (!IsReadOnly && !extendSelection && !rectangle && !addCaret &&
                 TryToggleMarkdownTaskCheckboxAtPoint(point))
             {
@@ -356,6 +361,11 @@ namespace Markify.Textify
 
         private void HandleMouseMove(object sender, MouseEventArgs e)
         {
+            if (_pressedMarkdownCodeFenceCopyButtonLine >= 0)
+            {
+                _surface.Cursor = Cursors.Hand;
+                return;
+            }
             if (e.LeftButton == MouseButtonState.Pressed && _surface.IsMouseCaptured)
             {
                 _surface.Cursor = Cursors.IBeam;
@@ -378,10 +388,64 @@ namespace Markify.Textify
             {
                 Point point = e.GetPosition(_surface);
                 bool overTask = !IsReadOnly && IsMarkdownTaskCheckboxAtPoint(point);
+                int hoveredCopyButtonLine = MarkdownCodeFenceCopyButtonLineAtPoint(point);
+                bool overCodeFenceCopy = hoveredCopyButtonLine >= 0;
+                if (_hoveredMarkdownCodeFenceCopyButtonLine != hoveredCopyButtonLine)
+                {
+                    _hoveredMarkdownCodeFenceCopyButtonLine = hoveredCopyButtonLine;
+                    _surface.InvalidateVisual();
+                }
                 bool controlClickTarget = (Keyboard.Modifiers & ModifierKeys.Control) != 0 &&
                     IsMarkdownLinkAtPoint(point);
-                _surface.Cursor = overTask || controlClickTarget ? Cursors.Hand : Cursors.IBeam;
+                _surface.Cursor = overCodeFenceCopy || overTask || controlClickTarget
+                    ? Cursors.Hand : Cursors.IBeam;
             }
+        }
+
+        private void HandleMouseUp(object sender, MouseButtonEventArgs e)
+        {
+            _surface.ReleaseMouseCapture();
+            _pressedMarkdownCodeFenceCopyButtonLine = -1;
+            Point point = e.GetPosition(_surface);
+            _hoveredMarkdownCodeFenceCopyButtonLine = MarkdownCodeFenceCopyButtonLineAtPoint(point);
+            _surface.InvalidateVisual();
+        }
+
+        private void HandleSurfaceMouseLeave(object sender, MouseEventArgs e)
+        {
+            _surface.Cursor = Cursors.IBeam;
+            if (_hoveredMarkdownCodeFenceCopyButtonLine < 0) return;
+            _hoveredMarkdownCodeFenceCopyButtonLine = -1;
+            _surface.InvalidateVisual();
+        }
+
+        private int MarkdownCodeFenceCopyButtonLineAtPoint(Point point)
+        {
+            int row = VisibleRowAtY(point.Y);
+            int line = DocumentLineAtVisibleRow(row);
+            Rect bounds;
+            if (!TryGetMarkdownCodeFenceCopyButtonBounds(line,
+                TopInset + VisibleRowTop(row), out bounds)) return -1;
+            bounds.Inflate(2, 2);
+            return bounds.Contains(point) ? line : -1;
+        }
+
+        private bool TryCopyMarkdownCodeFenceAtPoint(Point point)
+        {
+            int row = VisibleRowAtY(point.Y);
+            int line = DocumentLineAtVisibleRow(row);
+            Rect bounds;
+            if (!TryGetMarkdownCodeFenceCopyButtonBounds(line,
+                TopInset + VisibleRowTop(row), out bounds)) return false;
+            bounds.Inflate(2, 2);
+            if (!bounds.Contains(point)) return false;
+            _pressedMarkdownCodeFenceCopyButtonLine = line;
+            _hoveredMarkdownCodeFenceCopyButtonLine = line;
+            _surface.CaptureMouse();
+            _surface.InvalidateVisual();
+            try { Clipboard.SetText(MarkdownCodeFenceContent(line)); }
+            catch { }
+            return true;
         }
 
         private bool IsMarkdownTaskCheckboxAtPoint(Point point)
@@ -512,11 +576,12 @@ namespace Markify.Textify
             return lineStart + renderedSegment.SourceBoundaries[col];
         }
 
-        private void HandleMouseUp(object sender, MouseButtonEventArgs e) { _surface.ReleaseMouseCapture(); }
-
         private void Changed()
         {
-            _caretVisible = true; _surface.InvalidateMeasure(); _surface.InvalidateVisual();
+            _caretVisible = true;
+            RefreshMarkdownSetextSourceVisibility();
+            RefreshMarkdownMathEnvironmentVisibility();
+            _surface.InvalidateMeasure(); _surface.InvalidateVisual();
             RefreshMarkdownTableSourceVisibility();
             UpdateMarkdownVideoPlayerLayout(); EnsureCaretVisible(); PublishSelectionState();
         }

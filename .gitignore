@@ -23,3 +23,5 @@ publish/
 .idea/
 _ReSharper*/
 *.DotSettings.user
+
+.dotnet-cli/

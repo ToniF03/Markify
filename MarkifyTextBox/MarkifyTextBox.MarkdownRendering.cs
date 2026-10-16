@@ -88,6 +88,923 @@ namespace Markify.Textify
             }
         }
 
+        internal struct MarkdownMathSpan
+        {
+            public int ContentStart;
+            public int ContentLength;
+            public int DelimiterLength;
+            public int OpeningStart;
+            public int ClosingStart;
+            public bool IsDisplay;
+            public bool IsDisplayBlockBody;
+
+            public MarkdownMathSpan(int contentStart, int contentLength, int delimiterLength,
+                int openingStart, int closingStart, bool isDisplay, bool isDisplayBlockBody)
+            {
+                ContentStart = contentStart;
+                ContentLength = contentLength;
+                DelimiterLength = delimiterLength;
+                OpeningStart = openingStart;
+                ClosingStart = closingStart;
+                IsDisplay = isDisplay;
+                IsDisplayBlockBody = isDisplayBlockBody;
+            }
+        }
+
+        internal struct MarkdownMathCharacter
+        {
+            public char Value;
+            public int SourceStart;
+            public int SourceEnd;
+            public bool IsFraction;
+            public int ScriptKind;
+            public List<MarkdownMathCharacter> Numerator;
+            public List<MarkdownMathCharacter> Denominator;
+
+            public MarkdownMathCharacter(char value, int sourceStart, int sourceEnd)
+            {
+                Value = value;
+                SourceStart = sourceStart;
+                SourceEnd = sourceEnd;
+                IsFraction = false;
+                ScriptKind = 0;
+                Numerator = null;
+                Denominator = null;
+            }
+
+            public MarkdownMathCharacter(List<MarkdownMathCharacter> numerator,
+                List<MarkdownMathCharacter> denominator, int sourceStart, int sourceEnd)
+            {
+                Value = '\uFFFC';
+                SourceStart = sourceStart;
+                SourceEnd = sourceEnd;
+                IsFraction = true;
+                ScriptKind = 0;
+                Numerator = numerator;
+                Denominator = denominator;
+            }
+        }
+
+        internal sealed class RenderedMathFractionLayout
+        {
+            public int DisplayStart;
+            public int DisplayLength;
+            public List<MarkdownMathCharacter> Numerator;
+            public List<MarkdownMathCharacter> Denominator;
+            public double Width;
+            public double PlaceholderWidth;
+            public double FontSize;
+        }
+
+        internal sealed class MarkdownMathPreviewLine
+        {
+            public int SourceLine;
+            public List<MarkdownMathCharacter> Characters;
+        }
+
+        private void RebuildMarkdownMathBlocks()
+        {
+            _markdownMathBlocks = new List<MarkdownMathBlock>();
+            _markdownMathBlockByLine = new int[_lineCache.Length];
+            _markdownMathContainsFractionByLine = new bool[_lineCache.Length];
+            _markdownMathFractionCheckedByLine = new bool[_lineCache.Length];
+            for (int line = 0; line < _markdownMathBlockByLine.Length; line++)
+                _markdownMathBlockByLine[line] = -1;
+            if (!EnableMarkdownMath) return;
+
+            for (int line = 0; line < _lineCache.Length; line++)
+            {
+                if (_markdownMathBlockByLine[line] >= 0 || IsMarkdownCodeFenceLine(line) ||
+                    IsMarkdownIndentedCodeLine(line)) continue;
+                int openingColumn;
+                if (!TryGetMarkdownDisplayMathDelimiter(line, out openingColumn)) continue;
+                int openingQuoteDepth = MarkdownQuoteDepthForLine(line);
+
+                int closingLine = -1;
+                int closingColumn = -1;
+                for (int candidate = line + 1; candidate < _lineCache.Length; candidate++)
+                {
+                    if (IsMarkdownCodeFenceLine(candidate) || IsMarkdownIndentedCodeLine(candidate)) break;
+                    int candidateColumn;
+                    if (TryGetMarkdownDisplayMathDelimiter(candidate, out candidateColumn) &&
+                        MarkdownQuoteDepthForLine(candidate) >= openingQuoteDepth)
+                    {
+                        closingLine = candidate;
+                        closingColumn = candidateColumn;
+                        break;
+                    }
+                }
+                if (closingLine < 0) continue;
+
+                int blockIndex = _markdownMathBlocks.Count;
+                _markdownMathBlocks.Add(new MarkdownMathBlock(line, closingLine, openingColumn, closingColumn));
+                for (int blockLine = line; blockLine <= closingLine; blockLine++)
+                    _markdownMathBlockByLine[blockLine] = blockIndex;
+                line = closingLine;
+            }
+        }
+
+        private bool TryGetMarkdownDisplayMathDelimiter(int line, out int delimiterColumn)
+        {
+            delimiterColumn = -1;
+            if (line < 0 || line >= _lineCache.Length) return false;
+            string value = _lineCache[line].TrimEnd('\r');
+            int position = MarkdownQuotePrefixLengthForLine(line);
+            while (position < value.Length && (value[position] == ' ' || value[position] == '\t')) position++;
+            if (position + 2 > value.Length || value[position] != '$' || value[position + 1] != '$') return false;
+            position += 2;
+            while (position < value.Length && (value[position] == ' ' || value[position] == '\t')) position++;
+            if (position != value.Length) return false;
+            delimiterColumn = MarkdownQuotePrefixLengthForLine(line);
+            while (delimiterColumn < value.Length &&
+                (value[delimiterColumn] == ' ' || value[delimiterColumn] == '\t')) delimiterColumn++;
+            return true;
+        }
+
+        private bool TryGetMarkdownMathBlock(int line, out MarkdownMathBlock block)
+        {
+            block = default(MarkdownMathBlock);
+            if (!EnableMarkdownMath || line < 0 || line >= _markdownMathBlockByLine.Length) return false;
+            int blockIndex = _markdownMathBlockByLine[line];
+            if (blockIndex < 0 || blockIndex >= _markdownMathBlocks.Count) return false;
+            block = _markdownMathBlocks[blockIndex];
+            return true;
+        }
+
+        private bool IsMarkdownMathBlockDelimiterLine(int line)
+        {
+            MarkdownMathBlock block;
+            return TryGetMarkdownMathBlock(line, out block) &&
+                (line == block.OpeningLine || line == block.ClosingLine);
+        }
+
+        private bool IsMarkdownMathEnvironmentControlLine(int line)
+        {
+            MarkdownMathBlock block;
+            if (!TryGetMarkdownMathBlock(line, out block) || IsMarkdownMathBlockDelimiterLine(line))
+                return false;
+            string value = _lineCache[line].TrimEnd('\r');
+            int position = MarkdownQuotePrefixLengthForLine(line);
+            while (position < value.Length && char.IsWhiteSpace(value[position])) position++;
+            string remaining = value.Substring(position);
+            if (!remaining.StartsWith("\\begin{", StringComparison.Ordinal) &&
+                !remaining.StartsWith("\\end{", StringComparison.Ordinal)) return false;
+            int groupStart = value.IndexOf('{', position);
+            int groupEnd = value.IndexOf('}', groupStart + 1);
+            if (groupStart < 0 || groupEnd < 0) return false;
+            string environment = value.Substring(groupStart + 1,
+                groupEnd - groupStart - 1).Trim();
+            if (!IsSupportedMarkdownMathEnvironment(environment)) return false;
+            int trailingStart = groupEnd + 1;
+            while (trailingStart < value.Length && char.IsWhiteSpace(value[trailingStart])) trailingStart++;
+            if (environment == "alignedat" && value.Substring(position).StartsWith("\\begin{",
+                StringComparison.Ordinal))
+            {
+                if (!TryGetMathGroup(value, trailingStart, value.Length, out int countStart,
+                    out int countEnd, out int afterCount) ||
+                    !int.TryParse(value.Substring(countStart, countEnd - countStart), out _)) return false;
+                trailingStart = afterCount;
+            }
+            for (int index = trailingStart; index < value.Length; index++)
+                if (!char.IsWhiteSpace(value[index])) return false;
+            return true;
+        }
+
+        internal bool MarkdownMathEnvironmentControlLineIsVisible(int line)
+        {
+            if (!IsMarkdownMathEnvironmentControlLine(line)) return false;
+            int lineStart = GetLineStart(line);
+            int lineEnd = GetLineEndAtLine(line);
+            if (_caret >= lineStart && _caret <= lineEnd) return true;
+            foreach (int caret in AdditionalCaretPositions)
+                if (caret >= lineStart && caret <= lineEnd) return true;
+            foreach (SelectionSpan selection in GetSelectionSpansForLine(line))
+                if (selection.Start < lineEnd && selection.Start + selection.Length > lineStart) return true;
+            return false;
+        }
+
+        internal bool MarkdownMathBlockMarkersAreVisible(int line)
+        {
+            MarkdownMathBlock block;
+            if (!TryGetMarkdownMathBlock(line, out block)) return false;
+            int blockStart = GetLineStart(block.OpeningLine) + block.OpeningColumn;
+            int blockEnd = GetLineStart(block.ClosingLine) + block.ClosingColumn + 2;
+            if (_caret >= blockStart && _caret <= blockEnd) return true;
+            foreach (int caret in AdditionalCaretPositions)
+                if (caret >= blockStart && caret <= blockEnd) return true;
+            for (int selectedLine = block.OpeningLine; selectedLine <= block.ClosingLine; selectedLine++)
+                foreach (SelectionSpan selection in GetSelectionSpansForLine(selectedLine))
+                    if (selection.Start < blockEnd && selection.Start + selection.Length > blockStart) return true;
+            return false;
+        }
+
+        internal bool MarkdownMathSourceIsVisible(int line)
+        {
+            MarkdownMathBlock block;
+            return TryGetMarkdownMathBlock(line, out block) && MarkdownMathBlockMarkersAreVisible(line);
+        }
+
+        internal bool MarkdownMathBlockPreviewIsVisible(int line)
+        {
+            MarkdownMathBlock block;
+            return TryGetMarkdownMathBlock(line, out block) && line == block.ClosingLine &&
+                MarkdownMathBlockMarkersAreVisible(line);
+        }
+
+        internal List<MarkdownMathPreviewLine> GetMarkdownMathPreviewLines(int closingLine)
+        {
+            var previewLines = new List<MarkdownMathPreviewLine>();
+            MarkdownMathBlock block;
+            if (!TryGetMarkdownMathBlock(closingLine, out block) || closingLine != block.ClosingLine)
+                return previewLines;
+
+            for (int line = block.OpeningLine + 1; line < block.ClosingLine; line++)
+            {
+                if (IsMarkdownMathEnvironmentControlLine(line)) continue;
+                string source = _lineCache[line].TrimEnd('\r');
+                int quotePrefix = MarkdownQuotePrefixLengthForLine(line);
+                source = source.Substring(Math.Min(quotePrefix, source.Length)).Trim();
+                previewLines.Add(new MarkdownMathPreviewLine
+                {
+                    SourceLine = line,
+                    Characters = RenderMarkdownMath(source, 0)
+                });
+            }
+            return previewLines;
+        }
+
+        internal double MarkdownMathSourceRowHeight(int line)
+        {
+            return Math.Ceiling(FontSize * 1.45);
+        }
+
+        internal double MarkdownMathBlockPreviewHeight(int closingLine)
+        {
+            List<MarkdownMathPreviewLine> lines = GetMarkdownMathPreviewLines(closingLine);
+            if (lines.Count == 0) return 0;
+            double height = 8 + 13 + 4 + 8;
+            foreach (MarkdownMathPreviewLine line in lines)
+            {
+                double fontSize = FontSize * 1.08;
+                bool containsFraction = line.Characters != null && line.Characters.Exists(character => character.IsFraction);
+                height += Math.Ceiling(fontSize * (containsFraction ? 2.7 : 1.5)) + 2;
+            }
+            return height;
+        }
+
+        internal double MarkdownMathBlockPreviewWidth(int closingLine)
+        {
+            double contentWidth = 0;
+            foreach (MarkdownMathPreviewLine line in GetMarkdownMathPreviewLines(closingLine))
+                contentWidth = Math.Max(contentWidth, MeasureMarkdownMathSequenceWidth(line.Characters,
+                    FontSize * 1.08));
+            return Math.Max(220, contentWidth + 20);
+        }
+
+        internal List<MarkdownMathSpan> GetMarkdownMathSpansForLine(int line)
+        {
+            var spans = new List<MarkdownMathSpan>();
+            if (!EnableMarkdownMath || line < 0 || line >= _lineCache.Length ||
+                IsMarkdownCodeFenceLine(line) || IsMarkdownIndentedCodeLine(line)) return spans;
+            string value = _lineCache[line].TrimEnd('\r');
+
+            MarkdownMathBlock block;
+            if (TryGetMarkdownMathBlock(line, out block))
+            {
+                if (line != block.OpeningLine && line != block.ClosingLine)
+                {
+                    int contentStart = MarkdownQuotePrefixLengthForLine(line);
+                    int contentLength = Math.Max(0, value.Length - contentStart);
+                    if (contentLength > 0)
+                        spans.Add(new MarkdownMathSpan(contentStart, contentLength, 0, -1, -1, true, true));
+                }
+                return spans;
+            }
+
+            int searchFrom = 0;
+            while (searchFrom < value.Length)
+            {
+                int opening = value.IndexOf('$', searchFrom);
+                if (opening < 0) break;
+                if (IsMarkdownEscaped(value, opening) || IsMarkdownInlineCodeContentColumn(line, opening))
+                {
+                    searchFrom = opening + 1;
+                    continue;
+                }
+                int delimiterLength = opening + 1 < value.Length && value[opening + 1] == '$' ? 2 : 1;
+                if (opening > 0 && value[opening - 1] == '$' ||
+                    opening + delimiterLength < value.Length && value[opening + delimiterLength] == '$')
+                {
+                    searchFrom = opening + delimiterLength;
+                    continue;
+                }
+                int contentStart = opening + delimiterLength;
+                if (contentStart >= value.Length ||
+                    (delimiterLength == 1 && char.IsWhiteSpace(value[contentStart])))
+                {
+                    searchFrom = contentStart;
+                    continue;
+                }
+
+                int closing = -1;
+                int candidate = contentStart;
+                while (candidate < value.Length)
+                {
+                    candidate = value.IndexOf('$', candidate);
+                    if (candidate < 0) break;
+                    if (IsMarkdownEscaped(value, candidate) || IsMarkdownInlineCodeContentColumn(line, candidate))
+                    {
+                        candidate++;
+                        continue;
+                    }
+                    int candidateLength = candidate + 1 < value.Length && value[candidate + 1] == '$' ? 2 : 1;
+                    if (candidateLength == delimiterLength &&
+                        !(candidate > 0 && value[candidate - 1] == '$') &&
+                        !(candidate + candidateLength < value.Length && value[candidate + candidateLength] == '$') &&
+                        candidate > contentStart &&
+                        (delimiterLength == 2 || !char.IsWhiteSpace(value[candidate - 1])))
+                    {
+                        closing = candidate;
+                        break;
+                    }
+                    candidate += candidateLength;
+                }
+                if (closing < 0)
+                {
+                    searchFrom = contentStart;
+                    continue;
+                }
+
+                spans.Add(new MarkdownMathSpan(contentStart, closing - contentStart, delimiterLength,
+                    opening, closing, delimiterLength == 2, false));
+                searchFrom = closing + delimiterLength;
+            }
+            return spans;
+        }
+
+        internal bool MarkdownMathMarkersAreVisible(int line, MarkdownMathSpan span)
+        {
+            if (span.DelimiterLength == 0 || span.OpeningStart < 0 || span.ClosingStart < 0) return false;
+            int lineStart = GetLineStart(line);
+            int pairStart = lineStart + span.OpeningStart;
+            int pairEnd = lineStart + span.ClosingStart + span.DelimiterLength;
+            if (_caret >= pairStart && _caret <= pairEnd) return true;
+            foreach (int caret in AdditionalCaretPositions)
+                if (caret >= pairStart && caret <= pairEnd) return true;
+            foreach (SelectionSpan selection in GetSelectionSpansForLine(line))
+                if (selection.Start < pairEnd && selection.Start + selection.Length > pairStart) return true;
+            return false;
+        }
+
+        private bool IsMarkdownMathContentColumn(int line, int sourceColumn)
+        {
+            foreach (MarkdownMathSpan span in GetMarkdownMathSpansForLine(line))
+                if (sourceColumn >= span.ContentStart && sourceColumn < span.ContentStart + span.ContentLength)
+                    return true;
+            return false;
+        }
+
+        private List<MarkdownScriptSpan> GetMarkdownMathScriptSpansForLine(int line)
+        {
+            var scripts = new List<MarkdownScriptSpan>();
+            string value = _lineCache[line].TrimEnd('\r');
+            foreach (MarkdownMathSpan math in GetMarkdownMathSpansForLine(line))
+            {
+                int end = math.ContentStart + math.ContentLength;
+                for (int position = math.ContentStart; position < end; position++)
+                {
+                    char delimiter = value[position];
+                    if ((delimiter != '^' && delimiter != '_') || IsMarkdownEscaped(value, position) ||
+                        position + 1 >= end) continue;
+                    int argumentStart = position + 1;
+                    int argumentEnd;
+                    if (TryGetMathGroup(value, argumentStart, end,
+                        out int groupStart, out int groupEnd, out _))
+                    {
+                        argumentStart = groupStart;
+                        argumentEnd = groupEnd;
+                    }
+                    else if (value[argumentStart] == '\\')
+                    {
+                        argumentEnd = argumentStart + 1;
+                        if (argumentEnd < end && char.IsLetter(value[argumentEnd]))
+                            while (argumentEnd < end && char.IsLetter(value[argumentEnd])) argumentEnd++;
+                        else if (argumentEnd < end) argumentEnd++;
+                    }
+                    else
+                    {
+                        argumentEnd = argumentStart + 1;
+                    }
+                    if (argumentEnd > argumentStart)
+                        scripts.Add(new MarkdownScriptSpan(argumentStart, argumentEnd - argumentStart,
+                            delimiter == '^'));
+                }
+            }
+            return scripts;
+        }
+
+        internal void ApplyMarkdownMathStyle(FormattedText formatted, int line, int[] sourceColumns)
+        {
+            if (!EnableMarkdownMath || MarkdownMathSourceIsVisible(line) ||
+                sourceColumns == null || sourceColumns.Length == 0) return;
+            List<MarkdownMathSpan> spans = GetMarkdownMathSpansForLine(line);
+            for (int index = 0; index < sourceColumns.Length;)
+            {
+                MarkdownMathSpan active = default(MarkdownMathSpan);
+                bool insideMath = false;
+                foreach (MarkdownMathSpan span in spans)
+                    if (sourceColumns[index] >= span.ContentStart &&
+                        sourceColumns[index] < span.ContentStart + span.ContentLength)
+                    {
+                        active = span;
+                        insideMath = true;
+                        break;
+                    }
+                if (!insideMath)
+                {
+                    index++;
+                    continue;
+                }
+                int start = index++;
+                while (index < sourceColumns.Length)
+                {
+                    bool nextIsMath = false;
+                    foreach (MarkdownMathSpan span in spans)
+                        if (sourceColumns[index] >= span.ContentStart &&
+                            sourceColumns[index] < span.ContentStart + span.ContentLength)
+                        {
+                            nextIsMath = true;
+                            break;
+                        }
+                    if (!nextIsMath) break;
+                    index++;
+                }
+                int length = index - start;
+                formatted.SetFontFamily(new FontFamily("Cambria Math"), start, length);
+                if (active.IsDisplay || active.IsDisplayBlockBody)
+                    formatted.SetFontSize(Math.Max(1, FontSizeForLine(line) * 1.08), start, length);
+            }
+        }
+
+        private List<MarkdownMathCharacter> RenderMarkdownMath(string value, int sourceOffset)
+        {
+            var output = new List<MarkdownMathCharacter>();
+            RenderMarkdownMathRange(value, 0, value.Length, sourceOffset, output);
+            return output;
+        }
+
+        private void RenderMarkdownMathRange(string value, int start, int end, int sourceOffset,
+            List<MarkdownMathCharacter> output)
+        {
+            for (int position = start; position < end;)
+            {
+                char current = value[position];
+                if (current == '\\' && position + 2 < end && value[position + 1] == '\\' &&
+                    char.IsLetter(value[position + 2]))
+                {
+                    // Accept doubled command slashes commonly used when formulas are
+                    // copied from escaped strings, e.g. \\pm and \\sqrt.
+                    position++;
+                    continue;
+                }
+                if (current == '\\' && position + 1 < end)
+                {
+                    int commandEnd = position + 1;
+                    if (char.IsLetter(value[commandEnd]))
+                    {
+                        while (commandEnd < end && char.IsLetter(value[commandEnd])) commandEnd++;
+                        string command = value.Substring(position + 1, commandEnd - position - 1);
+                        int argumentStart;
+                        int argumentEnd;
+                        int afterArgument;
+                        if ((command == "begin" || command == "end") &&
+                            TryGetMathGroup(value, commandEnd, end, out argumentStart,
+                                out argumentEnd, out afterArgument))
+                        {
+                            string environment = value.Substring(argumentStart,
+                                argumentEnd - argumentStart).Trim();
+                            if (IsSupportedMarkdownMathEnvironment(environment))
+                            {
+                                position = afterArgument;
+                                if (command == "begin" && environment == "alignedat" &&
+                                    TryGetMathGroup(value, position, end, out argumentStart,
+                                        out argumentEnd, out afterArgument))
+                                    position = afterArgument;
+                                continue;
+                            }
+                        }
+                        if (command == "frac" && TryRenderMarkdownMathFraction(value, commandEnd,
+                            end, sourceOffset, position, output, out int afterFraction))
+                        {
+                            position = afterFraction;
+                            continue;
+                        }
+                        if (TryGetMathAccent(command, out char accent) &&
+                            TryGetMathGroup(value, commandEnd, end, out argumentStart,
+                                out argumentEnd, out afterArgument))
+                        {
+                            var accented = new List<MarkdownMathCharacter>();
+                            RenderMarkdownMathRange(value, argumentStart, argumentEnd, sourceOffset, accented);
+                            foreach (MarkdownMathCharacter character in accented)
+                            {
+                                output.Add(character);
+                                if (!char.IsWhiteSpace(character.Value))
+                                    output.Add(new MarkdownMathCharacter(accent, character.SourceStart,
+                                        character.SourceEnd));
+                            }
+                            position = afterArgument;
+                            continue;
+                        }
+                        if (command == "sqrt")
+                        {
+                            int radicandPosition = commandEnd;
+                            while (radicandPosition < end && char.IsWhiteSpace(value[radicandPosition])) radicandPosition++;
+                            int rootIndexStart = -1;
+                            int rootIndexEnd = -1;
+                            if (radicandPosition < end && value[radicandPosition] == '[')
+                            {
+                                int rootIndexClose = value.IndexOf(']', radicandPosition + 1,
+                                    end - radicandPosition - 1);
+                                if (rootIndexClose >= 0)
+                                {
+                                    rootIndexStart = radicandPosition + 1;
+                                    rootIndexEnd = rootIndexClose;
+                                    radicandPosition = rootIndexClose + 1;
+                                }
+                            }
+                            if (TryGetMathGroup(value, radicandPosition, end,
+                                out argumentStart, out argumentEnd, out afterArgument))
+                            {
+                                if (rootIndexStart >= 0)
+                                {
+                                    var rootIndex = new List<MarkdownMathCharacter>();
+                                    RenderMarkdownMathRange(value, rootIndexStart, rootIndexEnd, sourceOffset, rootIndex);
+                                    foreach (MarkdownMathCharacter rootCharacter in rootIndex)
+                                    {
+                                        char superscript;
+                                        output.Add(new MarkdownMathCharacter(
+                                            TryTranslateMathSuperscript(rootCharacter.Value, out superscript)
+                                                ? superscript : rootCharacter.Value,
+                                            rootCharacter.SourceStart, rootCharacter.SourceEnd));
+                                    }
+                                }
+                                output.Add(new MarkdownMathCharacter('\u221A', sourceOffset + position,
+                                    sourceOffset + commandEnd));
+                                var radicand = new List<MarkdownMathCharacter>();
+                                RenderMarkdownMathRange(value, argumentStart, argumentEnd, sourceOffset, radicand);
+                                if (radicand.Count > 1)
+                                    output.Add(new MarkdownMathCharacter('(', sourceOffset + argumentStart - 1,
+                                        sourceOffset + argumentStart));
+                                output.AddRange(radicand);
+                                if (radicand.Count > 1)
+                                    output.Add(new MarkdownMathCharacter(')', sourceOffset + argumentEnd,
+                                        sourceOffset + argumentEnd + 1));
+                                position = afterArgument;
+                                continue;
+                            }
+                        }
+                        if ((command == "text" || command == "operatorname" || command == "mathrm" ||
+                            command == "mathbf" || command == "mathit" || command == "mathsf" ||
+                            command == "mathtt" || command == "mathcal" || command == "mathbb") &&
+                            TryGetMathGroup(value, commandEnd, end, out argumentStart,
+                                out argumentEnd, out afterArgument))
+                        {
+                            if (command == "mathbb" && argumentEnd - argumentStart == 1 &&
+                                TryTranslateMathBlackboard(value[argumentStart], out char blackboard))
+                                output.Add(new MarkdownMathCharacter(blackboard, sourceOffset + position,
+                                    sourceOffset + afterArgument));
+                            else
+                                RenderMarkdownMathRange(value, argumentStart, argumentEnd, sourceOffset, output);
+                            position = afterArgument;
+                            continue;
+                        }
+                        if (TryTranslateMarkdownMathCommand(command, out string translated))
+                        {
+                            for (int character = 0; character < translated.Length; character++)
+                                output.Add(new MarkdownMathCharacter(translated[character], sourceOffset + position,
+                                    sourceOffset + commandEnd));
+                            position = commandEnd;
+                            continue;
+                        }
+                        if (command == "left" || command == "right" || command == "displaystyle" ||
+                            command == "textstyle" || command == "scriptstyle" || command == "limits" ||
+                            command == "nolimits")
+                        {
+                            position = commandEnd;
+                            continue;
+                        }
+                        for (int character = position; character < commandEnd; character++)
+                            output.Add(new MarkdownMathCharacter(value[character], sourceOffset + character,
+                                sourceOffset + character + 1));
+                        position = commandEnd;
+                        continue;
+                    }
+
+                    char escaped = value[commandEnd];
+                    if (escaped == '\\')
+                    {
+                        position += 2;
+                        while (position < end && char.IsWhiteSpace(value[position])) position++;
+                        if (position < end && value[position] == '[')
+                        {
+                            int spacingEnd = value.IndexOf(']', position + 1, end - position - 1);
+                            if (spacingEnd >= 0) position = spacingEnd + 1;
+                        }
+                        continue;
+                    }
+                    if (escaped == '{' || escaped == '}' || escaped == '$' || escaped == '%' ||
+                        escaped == '_' || escaped == '#' || escaped == '&' || escaped == '\\')
+                    {
+                        output.Add(new MarkdownMathCharacter(escaped, sourceOffset + position,
+                            sourceOffset + position + 2));
+                        position += 2;
+                        continue;
+                    }
+                    if (escaped == ',' || escaped == ';' || escaped == ':' || escaped == '!')
+                    {
+                        if (escaped != '!') output.Add(new MarkdownMathCharacter(' ', sourceOffset + position,
+                            sourceOffset + position + 2));
+                        position += 2;
+                        continue;
+                    }
+                    position++;
+                    continue;
+                }
+
+                if (current == 'f' && position + 4 <= end &&
+                    string.CompareOrdinal(value, position, "frac", 0, 4) == 0 &&
+                    (position == start || !char.IsLetterOrDigit(value[position - 1])) &&
+                    TryRenderMarkdownMathFraction(value, position + 4, end, sourceOffset,
+                        position, output, out int afterBareFraction))
+                {
+                    position = afterBareFraction;
+                    continue;
+                }
+
+                // In aligned TeX environments, an unescaped ampersand separates columns.
+                // The editor lays out each source line independently, so omit the control
+                // marker while keeping escaped \& available as a literal ampersand.
+                if (current == '&')
+                {
+                    position++;
+                    continue;
+                }
+
+                if ((current == '^' || current == '_') && position + 1 < end)
+                {
+                    int argumentStart = position + 1;
+                    int argumentEnd;
+                    int afterArgument;
+                    if (TryGetMathGroup(value, argumentStart, end, out int groupStart,
+                        out int groupEnd, out int afterGroup))
+                    {
+                        argumentStart = groupStart;
+                        argumentEnd = groupEnd;
+                        afterArgument = afterGroup;
+                    }
+                    else if (value[argumentStart] == '\\')
+                    {
+                        argumentEnd = argumentStart + 1;
+                        if (argumentEnd < end && char.IsLetter(value[argumentEnd]))
+                            while (argumentEnd < end && char.IsLetter(value[argumentEnd])) argumentEnd++;
+                        else if (argumentEnd < end) argumentEnd++;
+                        afterArgument = argumentEnd;
+                    }
+                    else
+                    {
+                        argumentEnd = argumentStart + 1;
+                        afterArgument = argumentEnd;
+                    }
+                    var script = new List<MarkdownMathCharacter>();
+                    RenderMarkdownMathRange(value, argumentStart, argumentEnd, sourceOffset, script);
+                    foreach (MarkdownMathCharacter character in script)
+                    {
+                        if (character.IsFraction)
+                        {
+                            output.Add(character);
+                            continue;
+                        }
+                        MarkdownMathCharacter scriptCharacter = character;
+                        scriptCharacter.ScriptKind = current == '^' ? 1 : 2;
+                        output.Add(scriptCharacter);
+                    }
+                    position = afterArgument;
+                    continue;
+                }
+
+                output.Add(new MarkdownMathCharacter(current, sourceOffset + position,
+                    sourceOffset + position + 1));
+                position++;
+            }
+        }
+
+        private bool TryRenderMarkdownMathFraction(string value, int numeratorPosition, int end,
+            int sourceOffset, int commandStart, List<MarkdownMathCharacter> output, out int afterFraction)
+        {
+            afterFraction = numeratorPosition;
+            if (!TryGetMathGroup(value, numeratorPosition, end, out int numeratorStart,
+                out int numeratorEnd, out int afterNumerator)) return false;
+            if (!TryGetMathGroup(value, afterNumerator, end, out int denominatorStart,
+                out int denominatorEnd, out afterFraction)) return false;
+
+            var numerator = new List<MarkdownMathCharacter>();
+            var denominator = new List<MarkdownMathCharacter>();
+            RenderMarkdownMathRange(value, numeratorStart, numeratorEnd, sourceOffset, numerator);
+            RenderMarkdownMathRange(value, denominatorStart, denominatorEnd, sourceOffset, denominator);
+            output.Add(new MarkdownMathCharacter(numerator, denominator,
+                sourceOffset + commandStart, sourceOffset + afterFraction));
+            return true;
+        }
+
+        private static bool IsSupportedMarkdownMathEnvironment(string environment)
+        {
+            switch (environment)
+            {
+                case "aligned":
+                case "alignedat":
+                case "align":
+                case "align*":
+                case "gathered":
+                case "gather":
+                case "gather*":
+                case "split":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static bool TryGetMathGroup(string value, int position, int limit,
+            out int contentStart, out int contentEnd, out int afterGroup)
+        {
+            contentStart = contentEnd = afterGroup = position;
+            while (position < limit && char.IsWhiteSpace(value[position])) position++;
+            if (position >= limit || value[position] != '{') return false;
+            contentStart = position + 1;
+            int depth = 1;
+            for (int index = contentStart; index < limit; index++)
+            {
+                if (value[index] == '{' && !IsMarkdownEscaped(value, index)) depth++;
+                else if (value[index] == '}' && !IsMarkdownEscaped(value, index) && --depth == 0)
+                {
+                    contentEnd = index;
+                    afterGroup = index + 1;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool TryTranslateMarkdownMathCommand(string command, out string translated)
+        {
+            switch (command)
+            {
+                case "alpha": translated = "α"; break; case "beta": translated = "β"; break;
+                case "gamma": translated = "γ"; break; case "delta": translated = "δ"; break;
+                case "epsilon": translated = "ε"; break; case "varepsilon": translated = "ϵ"; break;
+                case "zeta": translated = "ζ"; break; case "eta": translated = "η"; break;
+                case "theta": translated = "θ"; break; case "vartheta": translated = "ϑ"; break;
+                case "iota": translated = "ι"; break; case "kappa": translated = "κ"; break;
+                case "lambda": translated = "λ"; break; case "mu": translated = "μ"; break;
+                case "nu": translated = "ν"; break; case "xi": translated = "ξ"; break;
+                case "omicron": translated = "ο"; break; case "pi": translated = "π"; break;
+                case "varpi": translated = "ϖ"; break; case "rho": translated = "ρ"; break;
+                case "varrho": translated = "ϱ"; break; case "sigma": translated = "σ"; break;
+                case "varsigma": translated = "ς"; break; case "tau": translated = "τ"; break;
+                case "upsilon": translated = "υ"; break; case "phi": translated = "φ"; break;
+                case "varphi": translated = "ϕ"; break; case "chi": translated = "χ"; break;
+                case "psi": translated = "ψ"; break; case "omega": translated = "ω"; break;
+                case "Gamma": translated = "Γ"; break; case "Delta": translated = "Δ"; break;
+                case "Theta": translated = "Θ"; break; case "Lambda": translated = "Λ"; break;
+                case "Xi": translated = "Ξ"; break; case "Pi": translated = "Π"; break;
+                case "Sigma": translated = "Σ"; break; case "Upsilon": translated = "Υ"; break;
+                case "Phi": translated = "Φ"; break; case "Psi": translated = "Ψ"; break;
+                case "Omega": translated = "Ω"; break; case "times": translated = "×"; break;
+                case "cdot": translated = "·"; break; case "div": translated = "÷"; break;
+                case "pm": translated = "±"; break; case "mp": translated = "∓"; break;
+                case "le": case "leq": translated = "≤"; break;
+                case "ge": case "geq": translated = "≥"; break;
+                case "ne": case "neq": translated = "≠"; break;
+                case "approx": translated = "≈"; break; case "equiv": translated = "≡"; break;
+                case "infty": translated = "∞"; break; case "partial": translated = "∂"; break;
+                case "nabla": translated = "∇"; break; case "forall": translated = "∀"; break;
+                case "exists": translated = "∃"; break; case "in": translated = "∈"; break;
+                case "notin": translated = "∉"; break; case "subset": translated = "⊂"; break;
+                case "subseteq": translated = "⊆"; break; case "supset": translated = "⊃"; break;
+                case "supseteq": translated = "⊇"; break; case "cup": translated = "∪"; break;
+                case "cap": translated = "∩"; break; case "to": case "rightarrow": translated = "→"; break;
+                case "leftarrow": translated = "←"; break; case "Rightarrow": translated = "⇒"; break;
+                case "Leftarrow": translated = "⇐"; break; case "Leftrightarrow": translated = "⇔"; break;
+                case "sum": translated = "∑"; break; case "prod": translated = "∏"; break;
+                case "int": translated = "∫"; break; case "oint": translated = "∮"; break;
+                case "sqrt": translated = "√"; break; case "ell": translated = "ℓ"; break;
+                case "hbar": translated = "ℏ"; break; case "Re": translated = "ℜ"; break;
+                case "Im": translated = "ℑ"; break; case "emptyset": translated = "∅"; break;
+                case "land": translated = "∧"; break; case "lor": translated = "∨"; break;
+                case "neg": translated = "¬"; break; case "propto": translated = "∝"; break;
+                case "perp": translated = "⊥"; break; case "parallel": translated = "∥"; break;
+                case "angle": translated = "∠"; break; case "therefore": translated = "∴"; break;
+                case "cdots": translated = "⋯"; break; case "ldots": case "dots": translated = "…"; break;
+                case "prime": translated = "′"; break; case "degree": translated = "°"; break;
+                case "quad": translated = "　"; break; case "qquad": translated = "　　　"; break;
+                case "sin": case "cos": case "tan": case "cot": case "sec": case "csc":
+                case "arcsin": case "arccos": case "arctan": case "sinh": case "cosh":
+                case "tanh": case "log": case "ln": case "lg": case "exp": case "lim":
+                case "min": case "max": case "sup": case "inf": case "det": case "dim":
+                case "ker": case "arg": case "gcd": case "Pr":
+                    translated = command; break;
+                default: translated = null; return false;
+            }
+            return true;
+        }
+
+        private static bool TryTranslateMathBlackboard(char value, out char translated)
+        {
+            switch (value)
+            {
+                case 'N': translated = 'ℕ'; return true;
+                case 'Z': translated = 'ℤ'; return true;
+                case 'Q': translated = 'ℚ'; return true;
+                case 'R': translated = 'ℝ'; return true;
+                case 'C': translated = 'ℂ'; return true;
+                default: translated = value; return false;
+            }
+        }
+
+        private static bool TryTranslateMathSuperscript(char value, out char translated)
+        {
+            switch (value)
+            {
+                case '0': translated = '⁰'; return true; case '1': translated = '¹'; return true;
+                case '2': translated = '²'; return true; case '3': translated = '³'; return true;
+                case '4': translated = '⁴'; return true; case '5': translated = '⁵'; return true;
+                case '6': translated = '⁶'; return true; case '7': translated = '⁷'; return true;
+                case '8': translated = '⁸'; return true; case '9': translated = '⁹'; return true;
+                case '+': translated = '⁺'; return true; case '-': translated = '⁻'; return true;
+                case '=': translated = '⁼'; return true; case '(': translated = '⁽'; return true;
+                case ')': translated = '⁾'; return true; case 'n': translated = 'ⁿ'; return true;
+                case 'i': translated = 'ⁱ'; return true; default: translated = value; return false;
+            }
+        }
+
+        private static bool TryTranslateMathSubscript(char value, out char translated)
+        {
+            switch (value)
+            {
+                case '0': translated = '₀'; return true; case '1': translated = '₁'; return true;
+                case '2': translated = '₂'; return true; case '3': translated = '₃'; return true;
+                case '4': translated = '₄'; return true; case '5': translated = '₅'; return true;
+                case '6': translated = '₆'; return true; case '7': translated = '₇'; return true;
+                case '8': translated = '₈'; return true; case '9': translated = '₉'; return true;
+                case '+': translated = '₊'; return true; case '-': translated = '₋'; return true;
+                case '=': translated = '₌'; return true; case '(': translated = '₍'; return true;
+                case ')': translated = '₎'; return true; case 'a': translated = 'ₐ'; return true;
+                case 'e': translated = 'ₑ'; return true; case 'h': translated = 'ₕ'; return true;
+                case 'i': translated = 'ᵢ'; return true; case 'k': translated = 'ₖ'; return true;
+                case 'l': translated = 'ₗ'; return true; case 'm': translated = 'ₘ'; return true;
+                case 'n': translated = 'ₙ'; return true; case 'o': translated = 'ₒ'; return true;
+                case 'p': translated = 'ₚ'; return true; case 'r': translated = 'ᵣ'; return true;
+                case 's': translated = 'ₛ'; return true; case 't': translated = 'ₜ'; return true;
+                case 'u': translated = 'ᵤ'; return true; case 'v': translated = 'ᵥ'; return true;
+                case 'x': translated = 'ₓ'; return true; default: translated = value; return false;
+            }
+        }
+
+        private static bool TryGetMathAccent(string command, out char accent)
+        {
+            switch (command)
+            {
+                case "hat": accent = '\u0302'; return true;
+                case "bar": case "overline": accent = '\u0305'; return true;
+                case "tilde": accent = '\u0303'; return true;
+                case "dot": accent = '\u0307'; return true;
+                case "ddot": accent = '\u0308'; return true;
+                case "vec": accent = '\u20D7'; return true;
+                case "underline": accent = '\u0332'; return true;
+                case "acute": accent = '\u0301'; return true;
+                case "grave": accent = '\u0300'; return true;
+                case "check": accent = '\u030C'; return true;
+                case "breve": accent = '\u0306'; return true;
+                default: accent = '\0'; return false;
+            }
+        }
+
+        internal struct MarkdownFootnoteReference
+        {
+            public int Start;
+            public int LabelStart;
+            public int LabelLength;
+            public int End;
+
+            public MarkdownFootnoteReference(int start, int labelStart, int labelLength, int end)
+            {
+                Start = start;
+                LabelStart = labelStart;
+                LabelLength = labelLength;
+                End = end;
+            }
+        }
+
         internal struct MarkdownMediaBlock
         {
             public int Start;
@@ -127,6 +1044,117 @@ namespace Markify.Textify
                 formatted.SetFontFamily(new FontFamily("Segoe UI Symbol"), index, 1);
                 formatted.SetFontWeight(FontWeights.Normal, index, 1);
                 formatted.SetForegroundBrush(marker.IsChecked ? MarkdownTaskForeground : MarkdownTaskUncheckedForeground, index, 1);
+            }
+        }
+
+        internal bool IsMarkdownReferenceDefinitionLine(int line)
+        {
+            if (line < 0 || line >= _lineCache.Length || IsMarkdownCodeFenceLine(line) ||
+                IsMarkdownIndentedCodeLine(line)) return false;
+            string value = _lineCache[line].TrimEnd('\r');
+            return Regex.IsMatch(value,
+                @"^ {0,3}\[(?!\^)[^\]]+\]:[ \t]*(?:<[^>\r\n]+>|\S+)",
+                RegexOptions.CultureInvariant);
+        }
+
+        internal bool MarkdownReferenceDefinitionIsVisible(int line)
+        {
+            if (!IsMarkdownReferenceDefinitionLine(line)) return false;
+            int start = GetLineStart(line);
+            int end = GetLineEndAtLine(line);
+            if (_caret >= start && _caret <= end) return true;
+            foreach (int caret in AdditionalCaretPositions)
+                if (caret >= start && caret <= end) return true;
+            foreach (SelectionSpan selection in GetSelectionSpansForLine(line))
+                if (selection.Start < end && selection.Start + selection.Length > start) return true;
+            return false;
+        }
+
+        internal bool TryGetMarkdownAlertForLine(int line, out string alertType,
+            out int markerStart, out int markerEnd)
+        {
+            alertType = null;
+            markerStart = markerEnd = 0;
+            int quotePrefix = MarkdownQuotePrefixLengthForLine(line);
+            if (quotePrefix <= 0 || line < 0 || line >= _lineCache.Length || IsMarkdownCodeFenceLine(line)) return false;
+            string value = _lineCache[line].TrimEnd('\r');
+            int start = quotePrefix;
+            while (start < value.Length && (value[start] == ' ' || value[start] == '\t')) start++;
+            Match match = Regex.Match(value.Substring(start), @"^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            if (!match.Success) return false;
+            alertType = match.Groups[1].Value.ToUpperInvariant();
+            markerStart = start;
+            markerEnd = start + match.Length;
+            return true;
+        }
+
+        internal bool MarkdownAlertMarkersAreVisible(int line, int markerStart, int markerEnd)
+        {
+            return IsMarkdownBlockMarkerVisible(line, markerStart, markerEnd);
+        }
+
+        internal int MarkdownFootnoteDefinitionPrefixLength(int line)
+        {
+            if (line < 0 || line >= _lineCache.Length || IsMarkdownCodeFenceLine(line) ||
+                IsMarkdownIndentedCodeLine(line)) return 0;
+            Match match = Regex.Match(_lineCache[line].TrimEnd('\r'), @"^ {0,3}\[\^[^\]\s]+\]:[ \t]*");
+            return match.Success ? match.Length : 0;
+        }
+
+        internal void RebuildMarkdownFootnoteDefinitionCache()
+        {
+            _markdownFootnoteDefinitions.Clear();
+            for (int line = 0; line < _lineCache.Length; line++)
+            {
+                if (IsMarkdownCodeFenceLine(line) || IsMarkdownIndentedCodeLine(line)) continue;
+                Match match = Regex.Match(_lineCache[line].TrimEnd('\r'),
+                    @"^ {0,3}\[\^(?<label>[^\]\s]+)\]:");
+                if (match.Success) _markdownFootnoteDefinitions.Add(match.Groups["label"].Value);
+            }
+        }
+
+        internal List<MarkdownFootnoteReference> GetMarkdownFootnoteReferencesForLine(int line)
+        {
+            var references = new List<MarkdownFootnoteReference>();
+            if (line < 0 || line >= _lineCache.Length || IsMarkdownCodeFenceLine(line) ||
+                IsMarkdownIndentedCodeLine(line)) return references;
+            string value = _lineCache[line].TrimEnd('\r');
+            foreach (Match match in Regex.Matches(value, @"\[\^(?<label>[^\]\s]+)\]"))
+            {
+                if (IsEscaped(value, match.Index) || IsMarkdownInlineCodeContentColumn(line, match.Index)) continue;
+                string label = match.Groups["label"].Value;
+                if (!_markdownFootnoteDefinitions.Contains(label)) continue;
+                Group labelGroup = match.Groups["label"];
+                references.Add(new MarkdownFootnoteReference(match.Index, labelGroup.Index,
+                    labelGroup.Length, match.Index + match.Length));
+            }
+            return references;
+        }
+
+        internal bool MarkdownFootnoteMarkersAreVisible(int line, MarkdownFootnoteReference reference)
+        {
+            return IsMarkdownBlockMarkerVisible(line, reference.Start, reference.End);
+        }
+
+        internal void ApplyMarkdownFootnoteStyle(FormattedText formatted, int line, int[] sourceColumns)
+        {
+            if (formatted == null || sourceColumns == null || sourceColumns.Length == 0) return;
+            foreach (MarkdownFootnoteReference reference in GetMarkdownFootnoteReferencesForLine(line))
+            {
+                if (MarkdownFootnoteMarkersAreVisible(line, reference)) continue;
+                int index = 0;
+                while (index < sourceColumns.Length)
+                {
+                    while (index < sourceColumns.Length &&
+                        (sourceColumns[index] < reference.LabelStart ||
+                         sourceColumns[index] >= reference.LabelStart + reference.LabelLength)) index++;
+                    int start = index;
+                    while (index < sourceColumns.Length &&
+                        sourceColumns[index] >= reference.LabelStart &&
+                        sourceColumns[index] < reference.LabelStart + reference.LabelLength) index++;
+                    if (index > start) formatted.SetFontSize(Math.Max(8, FontSizeForLine(line) * 0.72), start, index - start);
+                }
             }
         }
 
@@ -198,7 +1226,8 @@ namespace Markify.Textify
 
         private ParsedMarkdownTableRow ParseMarkdownTableRow(int line)
         {
-            if (line < 0 || line >= _lineCache.Length || IsMarkdownCodeFenceLine(line)) return null;
+            if (line < 0 || line >= _lineCache.Length || IsMarkdownCodeFenceLine(line) ||
+                IsMarkdownIndentedCodeLine(line)) return null;
             string value = _lineCache[line].TrimEnd('\r');
             var separators = new List<int>();
             for (int index = 0; index < value.Length; index++)
@@ -302,8 +1331,10 @@ namespace Markify.Textify
             ApplyMarkdownInlineCode(formatted, line, sourceColumns);
             ApplyMarkdownTaskMarkerStyle(formatted, line, sourceColumns);
             ApplyMarkdownLinkStyle(formatted, line, sourceColumns);
+            ApplyMarkdownFootnoteStyle(formatted, line, sourceColumns);
             ApplyMarkdownListMarkerStyle(formatted, line, sourceColumns);
-            return formatted.WidthIncludingTrailingWhitespace;
+            return Math.Max(0, formatted.WidthIncludingTrailingWhitespace +
+                MarkdownMathFractionWidthAdjustment(segment, displayLength));
         }
 
         internal int PositionFromMarkdownTablePoint(int line, double pointX, MarkdownTableLayout layout)
@@ -547,7 +1578,8 @@ namespace Markify.Textify
         internal bool TryGetMarkdownTaskMarkerForLine(int line, out MarkdownTaskMarker marker)
         {
             marker = default(MarkdownTaskMarker);
-            if (IsMarkdownCodeFenceLine(line) || line < 0 || line >= _lineCache.Length) return false;
+            if (IsMarkdownCodeFenceLine(line) || IsMarkdownIndentedCodeLine(line) ||
+                line < 0 || line >= _lineCache.Length) return false;
             string value = _lineCache[line].TrimEnd('\r');
             int start = LeadingWhitespaceLength(value);
 
@@ -609,7 +1641,8 @@ namespace Markify.Textify
         internal bool TryGetMarkdownHardBreakMarkerForLine(int line, out MarkdownHardBreakMarker marker)
         {
             marker = default(MarkdownHardBreakMarker);
-            if (line < 0 || line >= _lineCache.Length || IsMarkdownCodeFenceLine(line)) return false;
+            if (line < 0 || line >= _lineCache.Length || IsMarkdownCodeFenceLine(line) ||
+                IsMarkdownIndentedCodeLine(line)) return false;
             MarkdownTableLayout tableLayout;
             if (TryGetMarkdownTableLayout(line, out tableLayout)) return false;
             string value = _lineCache[line].TrimEnd('\r');
@@ -645,7 +1678,8 @@ namespace Markify.Textify
         internal List<MarkdownLinkSpan> GetMarkdownLinksForLine(int line)
         {
             var links = new List<MarkdownLinkSpan>();
-            if (IsMarkdownCodeFenceLine(line) || line < 0 || line >= _lineCache.Length) return links;
+            if (IsMarkdownCodeFenceLine(line) || IsMarkdownIndentedCodeLine(line) ||
+                line < 0 || line >= _lineCache.Length) return links;
             string value = _lineCache[line].TrimEnd('\r');
             for (int start = 0; start < value.Length; start++)
             {
@@ -704,6 +1738,7 @@ namespace Markify.Textify
                     referenceLength = labelLength;
                     reference = value.Substring(referenceStart, referenceLength);
                 }
+                if (reference != null && reference.StartsWith("^", StringComparison.Ordinal)) continue;
                 string referenceDestination;
                 if (reference != null && TryGetMarkdownReferenceDestination(reference, out referenceDestination))
                 {
@@ -711,6 +1746,50 @@ namespace Markify.Textify
                         referenceStart, referenceLength, end, referenceDestination));
                     start = end - 1;
                 }
+            }
+            foreach (Match match in Regex.Matches(value,
+                @"<(?<angle>(?:https?://|mailto:)[^<>\s]+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,})>|(?<bare>(?:https?://|www\.)[^\s<>]+|(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,})",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                bool angle = match.Groups["angle"].Success;
+                Group targetGroup = angle ? match.Groups["angle"] : match.Groups["bare"];
+                string label = targetGroup.Value;
+                int labelStart = targetGroup.Index;
+                int labelLength = targetGroup.Length;
+                while (labelLength > 0 && ".,!?:;".IndexOf(label[labelLength - 1]) >= 0) labelLength--;
+                while (labelLength > 0 && label[labelLength - 1] == ')')
+                {
+                    string candidate = label.Substring(0, labelLength);
+                    int opens = 0, closes = 0;
+                    foreach (char character in candidate)
+                    {
+                        if (character == '(') opens++;
+                        else if (character == ')') closes++;
+                    }
+                    if (closes <= opens) break;
+                    labelLength--;
+                }
+                if (labelLength == 0 || IsEscaped(value, match.Index)) continue;
+                bool insideCode = false;
+                foreach (MarkdownInlineCodeSpan code in GetMarkdownInlineCodeSpansForLine(line))
+                    if (labelStart >= code.ContentStart - code.DelimiterLength &&
+                        labelStart < code.ContentStart + code.ContentLength + code.DelimiterLength)
+                    { insideCode = true; break; }
+                if (insideCode) continue;
+                int spanStart = angle ? match.Index : labelStart;
+                int spanEnd = angle ? match.Index + match.Length : labelStart + labelLength;
+                bool overlaps = false;
+                foreach (MarkdownLinkSpan existing in links)
+                    if (spanStart < existing.End && spanEnd > existing.Start) { overlaps = true; break; }
+                if (overlaps) continue;
+                string destination = value.Substring(labelStart, labelLength);
+                if (destination.IndexOf('@') >= 0 &&
+                    !destination.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                    !destination.StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
+                    !destination.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase))
+                    destination = "mailto:" + destination;
+                links.Add(new MarkdownLinkSpan(spanStart, labelStart, labelLength,
+                    labelStart, labelLength, spanEnd, destination));
             }
             return links;
         }
@@ -722,7 +1801,7 @@ namespace Markify.Textify
             if (normalized.Length == 0) return false;
             for (int line = 0; line < _lineCache.Length; line++)
             {
-                if (IsMarkdownCodeFenceLine(line)) continue;
+                if (IsMarkdownCodeFenceLine(line) || IsMarkdownIndentedCodeLine(line)) continue;
                 string value = _lineCache[line].TrimEnd('\r');
                 Match match = Regex.Match(value,
                     @"^ {0,3}\[([^\]]+)\]:[ \t]*(?:<([^>\r\n]+)>|(\S+))",
@@ -863,7 +1942,8 @@ namespace Markify.Textify
         internal bool TryGetMarkdownMediaBlockForLine(int line, out MarkdownMediaBlock block)
         {
             block = default(MarkdownMediaBlock);
-            if (IsMarkdownCodeFenceLine(line) || line < 0 || line >= _lineCache.Length) return false;
+            if (IsMarkdownCodeFenceLine(line) || IsMarkdownIndentedCodeLine(line) ||
+                line < 0 || line >= _lineCache.Length) return false;
             string value = _lineCache[line].TrimEnd('\r');
             int start = LeadingWhitespaceLength(value);
             string content = value.Substring(start).Trim();
@@ -875,13 +1955,30 @@ namespace Markify.Textify
             {
                 int labelStart = imageSyntax ? 2 : 1;
                 int labelEnd = FindUnescapedCharacter(content, ']', labelStart);
-                if (labelEnd < 0 || labelEnd + 1 >= content.Length || content[labelEnd + 1] != '(') return false;
-                int targetEnd = FindUnescapedCharacter(content, ')', labelEnd + 2);
-                if (targetEnd < 0 || content.Substring(targetEnd + 1).Trim().Length != 0) return false;
-                string source = UnwrapMarkdownDestination(content.Substring(labelEnd + 2, targetEnd - labelEnd - 2));
+                if (labelEnd < 0 || labelEnd + 1 >= content.Length) return false;
+                string altText = content.Substring(labelStart, labelEnd - labelStart);
+                string source;
+                int end;
+                if (content[labelEnd + 1] == '(')
+                {
+                    end = FindMarkdownLinkTargetEnd(content, labelEnd + 1);
+                    if (end < 0) return false;
+                    source = UnwrapMarkdownDestination(content.Substring(labelEnd + 2, end - labelEnd - 2));
+                    end++;
+                }
+                else if (content[labelEnd + 1] == '[')
+                {
+                    int referenceEnd = FindUnescapedCharacter(content, ']', labelEnd + 2);
+                    if (referenceEnd < 0) return false;
+                    string reference = referenceEnd == labelEnd + 2 ? altText :
+                        content.Substring(labelEnd + 2, referenceEnd - labelEnd - 2);
+                    if (!TryGetMarkdownReferenceDestination(reference, out source)) return false;
+                    end = referenceEnd + 1;
+                }
+                else return false;
+                if (content.Substring(end).Trim().Length != 0) return false;
                 bool isVideo = IsMarkdownVideoSource(source);
                 if (!imageSyntax && !isVideo) return false;
-                string altText = content.Substring(labelStart, labelEnd - labelStart);
                 block = new MarkdownMediaBlock(start, value.Length, source, altText, isVideo);
                 return true;
             }
